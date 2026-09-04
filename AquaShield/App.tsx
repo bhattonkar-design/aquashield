@@ -3,239 +3,210 @@ import {
   StyleSheet,
   Text,
   View,
-  TextInput,
-  TouchableOpacity,
   ScrollView,
+  TouchableOpacity,
+  TextInput,
+  ActivityIndicator,
   Modal,
   Platform,
-  ActivityIndicator
 } from 'react-native';
 
 const API_BASE = 'https://aquashield-s2p8.onrender.com/api/v1';
 
-// Web Audio synthesizer for the mechanical dual-tone evacuation alarm
-const playSiren = () => {
-  if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-  try {
-    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioContext) return;
-    const ctx = new AudioContext();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(440, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.4);
-    osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.8);
-    gain.gain.setValueAtTime(0.2, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1.2);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 1.2);
-  } catch (e) {
-    console.warn('Audio alarm blocked by browser policy:', e);
-  }
-};
+interface TelemetryData {
+  riskLevel: string;
+  compositeRiskScore: number;
+  advisoryMessage: string;
+  hydrology: {
+    riverDischargeM3s: number;
+    crestTimeHours: number;
+  };
+  weather: {
+    projected72hRainfallMm: number;
+    soilMoistureIndex: number;
+  };
+}
+
+interface Hazard {
+  id?: number;
+  type: string;
+  description: string;
+  timestamp?: string;
+  lat?: number;
+  lon?: number;
+}
+
+interface SearchResult {
+  place_id: number;
+  display_name: string;
+  lat: string;
+  lon: string;
+}
+
+interface Shelter {
+  id: number;
+  name: string;
+  distanceKm: number;
+  capacitySlots: number;
+  lat: number;
+  lon: number;
+}
 
 export default function App() {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [suggestions, setSuggestions] = useState<any[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [regionName, setRegionName] = useState('Rishikesh, Dehradun, Uttarakhand');
-  const [coords, setCoords] = useState({ lat: 30.11, lon: 78.29 });
-  const [telemetry, setTelemetry] = useState<any>(null);
-  const [forecastBars, setForecastBars] = useState<number[]>([180, 246, 210, 165, 130, 111, 95]);
-  const [hazards, setHazards] = useState<any[]>([
+  const [coords, setCoords] = useState<{ lat: number; lon: number }>({ lat: 27.18, lon: 78.02 });
+  const [regionName, setRegionName] = useState<string>('Agra Basin, UP');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [isSearching, setIsSearching] = useState<boolean>(false);
+  const [showDropdown, setShowDropdown] = useState<boolean>(false);
+  const searchTimeout = useRef<any>(null);
+
+  const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
+  const [forecastBars, setForecastBars] = useState<number[]>([90, 85, 80, 75, 70, 65, 60]);
+  const [hazards, setHazards] = useState<Hazard[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+
+  // Shelters
+  const shelters: Shelter[] = [
     {
       id: 1,
-      type: 'WATERLOGGED',
-      description: 'Waist-deep water near bypass culvert. Inundation buffer impassable for light vehicles.',
-      timestamp: '10 mins ago',
+      name: 'District Disaster Relief Center',
+      distanceKm: 1.3,
+      capacitySlots: 210,
+      lat: coords.lat + 0.012,
+      lon: coords.lon + 0.009,
     },
     {
       id: 2,
-      type: 'ROAD BLOCKED',
-      description: 'Riverbank sector breach. Staged detours diverted via eastern high ground.',
-      timestamp: '25 mins ago',
+      name: 'Higher Elevation Municipal Complex',
+      distanceKm: 2.1,
+      capacitySlots: 450,
+      lat: coords.lat - 0.015,
+      lon: coords.lon - 0.011,
     },
-  ]);
-  const [modalVisible, setModalVisible] = useState(false);
-  const [hazardType, setHazardType] = useState('WATERLOGGED');
-  const [hazardDesc, setHazardDesc] = useState('');
+  ];
 
-  const debounceTimer = useRef<any>(null);
+  // Modal State
+  const [modalVisible, setModalVisible] = useState<boolean>(false);
+  const [hazardType, setHazardType] = useState<string>('WATERLOGGED');
+  const [hazardDesc, setHazardDesc] = useState<string>('');
 
-  // 1. PWA Service Worker Registration & Document Meta Injection
-  useEffect(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined' && 'serviceWorker' in navigator) {
-      if (!document.querySelector('link[rel="manifest"]')) {
-        const link = document.createElement('link');
-        link.rel = 'manifest';
-        link.href = '/manifest.json';
-        document.head.appendChild(link);
-      }
-
-      if (!document.querySelector('meta[name="theme-color"]')) {
-        const meta = document.createElement('meta');
-        meta.name = 'theme-color';
-        meta.content = '#0b1329';
-        document.head.appendChild(meta);
-      }
-
-      window.addEventListener('load', () => {
-        navigator.serviceWorker
-          .register('/sw.js')
-          .then((reg) => console.log('AquaShield SW registered:', reg.scope))
-          .catch((err) => console.warn('SW registration failed:', err));
-      });
-    }
-  }, []);
-
-  // 2. Real-Time Autocomplete Suggestion Query with Debouncing
-  const handleQueryChange = (text: string) => {
-    setSearchQuery(text);
-
-    if (debounceTimer.current) {
-      clearTimeout(debounceTimer.current);
-    }
-
-    if (text.trim().length < 2) {
-      setSuggestions([]);
-      setIsSearching(false);
-      return;
-    }
-
-    setIsSearching(true);
-    debounceTimer.current = setTimeout(async () => {
+  const playSiren = () => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
       try {
-        const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-            text
-          )}&countrycodes=in&addressdetails=1&limit=5`
-        );
-        const results = await res.json();
-        setSuggestions(results || []);
-      } catch (err) {
-        console.warn('Autocomplete fetch error:', err);
-      } finally {
-        setIsSearching(false);
-      }
-    }, 300);
-  };
+        const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioContext) return;
+        const ctx = new AudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
 
-  const handleSelectSuggestion = (item: any) => {
-    const newLat = parseFloat(item.lat);
-    const newLon = parseFloat(item.lon);
-    setRegionName(item.display_name.split(',').slice(0, 3).join(', '));
-    setCoords({ lat: newLat, lon: newLon });
-    setSearchQuery('');
-    setSuggestions([]);
-  };
+        osc.type = 'sawtooth';
+        const now = ctx.currentTime;
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.linearRampToValueAtTime(880, now + 0.3);
+        osc.frequency.linearRampToValueAtTime(440, now + 0.6);
+        osc.frequency.linearRampToValueAtTime(880, now + 0.9);
+        osc.frequency.linearRampToValueAtTime(440, now + 1.2);
 
-  const handleManualSearch = async () => {
-    if (!searchQuery.trim()) return;
-    try {
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-          searchQuery
-        )}&countrycodes=in&limit=1`
-      );
-      const results = await res.json();
-      if (results && results.length > 0) {
-        handleSelectSuggestion(results[0]);
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 1.2);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 1.2);
+      } catch (e) {
+        console.warn('Audio synthesis failed:', e);
       }
-    } catch (e) {
-      console.warn('Manual search failed:', e);
     }
   };
 
-  // 3. Fallback Dynamic Hydrologic Calculation Engine
-  const generateCoordinateModel = (lat: number, lon: number) => {
-    const pseudoRain = Math.round(((Math.abs(Math.sin(lat) * Math.cos(lon)) * 70) + 10) * 10) / 10;
-    const pseudoSoil = Math.round((Math.abs(Math.cos(lat)) * 50) + 40);
-    const pseudoDischarge = Math.round((pseudoRain * 18.4 + 110) * 10) / 10;
-    const compScore = Math.min(95, Math.round(pseudoRain * 0.7 + pseudoSoil * 0.4));
-
-    let lvl = 'LOW';
-    let adv = `NORMAL: Stable river flow recorded (${pseudoRain} mm rain). Runoff capacity steady.`;
-    let crest = 36;
-    if (compScore >= 75) {
-      lvl = 'CATASTROPHIC';
-      adv = `CRITICAL ALERT: Dangerous riverbank surge (${pseudoRain} mm). Urgent evacuation orders in effect!`;
-      crest = 4;
-    } else if (compScore >= 50) {
-      lvl = 'HIGH';
-      adv = `HIGH ADVISORY: Significant rainfall accumulation (${pseudoRain} mm) and elevated discharge. Prepare evacuation kits.`;
-      crest = 12;
-    } else if (compScore >= 30) {
-      lvl = 'MODERATE';
-      adv = `MODERATE WATCH: Persistent accumulation (${pseudoRain} mm). Low-lying crossings monitored.`;
-      crest = 22;
-    }
-
-    return {
-      riskLevel: lvl,
-      compositeRiskScore: compScore,
-      advisoryMessage: adv,
-      hydrology: { riverDischargeM3s: pseudoDischarge, crestTimeHours: crest },
-      weather: { projected72hRainfallMm: pseudoRain, soilMoistureIndex: pseudoSoil },
-      forecastDays: [
-        pseudoDischarge,
-        Math.round(pseudoDischarge * 0.9),
-        Math.round(pseudoDischarge * 0.8),
-        Math.round(pseudoDischarge * 0.7),
-        Math.round(pseudoDischarge * 0.6),
-        Math.round(pseudoDischarge * 0.5),
-        Math.round(pseudoDischarge * 0.4),
-      ],
-    };
-  };
-
-  const fetchRiskData = async (lat: number, lon: number) => {
+  const fetchTelemetry = async (lat: number, lon: number) => {
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch(`${API_BASE}/flood-risk?lat=${lat}&lon=${lon}`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setLoading(true);
+      const res = await fetch(`${API_BASE}/flood-risk?lat=${lat}&lon=${lon}`);
       const data = await res.json();
       setTelemetry(data);
-
-      if (data.forecast7Days && Array.isArray(data.forecast7Days)) {
-        setForecastBars(data.forecast7Days.map((f: any) => Math.round(f.dischargeM3s || 120)));
-      } else if (data.forecast && Array.isArray(data.forecast)) {
-        setForecastBars(data.forecast.map((v: number) => Math.round(v)));
+      if (data.forecast7Days) {
+        setForecastBars(data.forecast7Days.map((f: any) => f.dischargeM3s));
       }
     } catch (e) {
-      const fallback = generateCoordinateModel(lat, lon);
-      setTelemetry(fallback);
-      setForecastBars(fallback.forecastDays);
+      console.warn('Backend unavailable, using telemetry fallback');
+      setTelemetry({
+        riskLevel: 'MODERATE',
+        compositeRiskScore: 42,
+        advisoryMessage: 'Yamuna downstream discharge elevated. Monitor embankment buffer.',
+        hydrology: { riverDischargeM3s: 142.5, crestTimeHours: 18 },
+        weather: { projected72hRainfallMm: 38.4, soilMoistureIndex: 58 },
+      });
+    } finally {
+      setLoading(false);
     }
   };
 
   const fetchHazards = async () => {
     try {
       const res = await fetch(`${API_BASE}/hazard-reports`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.length > 0) setHazards(data);
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        setHazards(data);
       }
     } catch (e) {
-      console.warn('Hazard fallback active');
+      console.warn('Could not fetch hazards, retaining active feed');
     }
   };
 
   useEffect(() => {
-    fetchRiskData(coords.lat, coords.lon);
+    fetchTelemetry(coords.lat, coords.lon);
     fetchHazards();
   }, [coords]);
 
-  // 4. Stress-Test Simulation Handlers
-  const runSimulation = (type: string) => {
+  const handleSearchChange = (text: string) => {
+    setSearchQuery(text);
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+
+    if (!text.trim() || text.length < 3) {
+      setSearchResults([]);
+      setShowDropdown(false);
+      return;
+    }
+
+    setIsSearching(true);
+    searchTimeout.current = setTimeout(async () => {
+      try {
+        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(text)}&limit=5`;
+        const res = await fetch(url, {
+          headers: { 'Accept-Language': 'en' },
+        });
+        const data = await res.json();
+        setSearchResults(data);
+        setShowDropdown(true);
+      } catch (e) {
+        console.warn('Geocoding search failed', e);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 400);
+  };
+
+  const selectLocation = (result: SearchResult) => {
+    const lat = parseFloat(result.lat);
+    const lon = parseFloat(result.lon);
+    const shortName = result.display_name.split(',').slice(0, 2).join(',');
+    setCoords({ lat, lon });
+    setRegionName(shortName);
+    setSearchQuery('');
+    setShowDropdown(false);
+  };
+
+  const runSimulation = async (type: string) => {
     playSiren();
+    try {
+      fetch(`${API_BASE}/simulate-flood-scenario?scenario=${type}`, { method: 'POST' });
+    } catch (e) {
+      console.warn('Backend sim trigger failed', e);
+    }
+
     if (type === 'cloudburst') {
       setTelemetry({
         riskLevel: 'HIGH',
@@ -266,17 +237,38 @@ export default function App() {
     }
   };
 
+  const triggerSOS = async () => {
+    playSiren();
+    alert('EMERGENCY SOS: High-priority distress signal broadcasted to rescue units.');
+    try {
+      await fetch(`${API_BASE}/trigger-sos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lat: coords.lat,
+          lon: coords.lon,
+          regionName: regionName,
+          details: 'Urgent rescue response needed at coordinates'
+        })
+      });
+    } catch (e) {
+      console.warn('SOS trigger failed', e);
+    }
+  };
+
   const submitHazard = async () => {
     if (!hazardDesc.trim()) return;
-    const newReport = {
-      id: Date.now(),
+    const newReport: Hazard = {
       type: hazardType,
-      description: hazardDesc,
+      description: hazardDesc.trim(),
       timestamp: 'Just now',
+      lat: coords.lat,
+      lon: coords.lon,
     };
+
     setHazards([newReport, ...hazards]);
-    setHazardDesc('');
     setModalVisible(false);
+    setHazardDesc('');
 
     try {
       await fetch(`${API_BASE}/hazard-reports`, {
@@ -284,103 +276,63 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newReport),
       });
+      fetchHazards();
     } catch (e) {
-      console.warn('Local hazard cached');
+      console.warn('Hazard POST failed; stored locally', e);
     }
   };
 
-  // Harmonized Telemetry Properties
-  const currentRisk = telemetry?.riskLevel || telemetry?.risk_level || 'HIGH';
-  const currentScore = telemetry?.compositeRiskScore ?? telemetry?.composite_index ?? 59;
-  const currentAdvisory =
-    telemetry?.advisoryMessage ||
-    telemetry?.advisory ||
-    'HIGH ADVISORY: Significant rainfall accumulation (25.0 mm) and elevated discharge. Prepare evacuation kits.';
+  const getRiskColor = (level: string = '') => {
+    switch (level.toUpperCase()) {
+      case 'CATASTROPHIC':
+        return '#ef4444';
+      case 'HIGH':
+        return '#f97316';
+      case 'MODERATE':
+        return '#eab308';
+      default:
+        return '#10b981';
+    }
+  };
 
-  const peakDischarge =
-    telemetry?.hydrology?.riverDischargeM3s ?? telemetry?.metrics?.peak_discharge ?? 245.8;
-  const crestHours =
-    telemetry?.hydrology?.crestTimeHours ?? telemetry?.metrics?.crest_surge_hours ?? 12;
-  const rainAccum =
-    telemetry?.weather?.projected72hRainfallMm ?? telemetry?.metrics?.rain_accumulation_72h ?? 25.0;
-
-  const rawMoisture =
-    telemetry?.weather?.soilMoistureIndex ?? telemetry?.metrics?.soil_moisture ?? 0.82;
-  const soilMoisture = rawMoisture <= 1 ? Math.round(rawMoisture * 100) : rawMoisture;
-
-  const riskColor =
-    currentRisk === 'CATASTROPHIC'
-      ? '#ef4444'
-      : currentRisk === 'HIGH'
-      ? '#f97316'
-      : currentRisk === 'MODERATE'
-      ? '#eab308'
-      : '#22c55e';
-
-  const mapUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${coords.lon - 0.08}%2C${
-    coords.lat - 0.06
-  }%2C${coords.lon + 0.08}%2C${coords.lat + 0.06}&layer=mapnik&marker=${coords.lat}%2C${coords.lon}`;
+  const mapEmbedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${coords.lon - 0.08}%2C${coords.lat - 0.05}%2C${coords.lon + 0.08}%2C${coords.lat + 0.05}&layer=mapnik&marker=${coords.lat}%2C${coords.lon}`;
 
   return (
-    <ScrollView style={styles.container} keyboardShouldPersistTaps="handled">
-      {/* Top Header */}
+    <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
+      {/* Header */}
       <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.regionText}>{regionName}</Text>
-          <Text style={[styles.riskBadge, { color: riskColor }]}>
-            {currentRisk} RISK ({currentScore}% COMPOSITE INDEX)
-          </Text>
+        <View>
+          <Text style={styles.title}>AquaShield AI</Text>
+          <Text style={styles.subtitle}>Hydrological Inundation Early Warning System</Text>
         </View>
-        <View style={styles.headerButtons}>
-          <TouchableOpacity
-            style={styles.sitrepBtn}
-            onPress={() => Platform.OS === 'web' && window.print()}
-          >
-            <Text style={styles.btnText}>📄 SitRep</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.sosBtn}
-            onPress={() => {
-              playSiren();
-              alert('EMERGENCY SOS: High-priority distress signal broadcasted to rescue units.');
-            }}
-          >
+        <View style={styles.headerActions}>
+          <TouchableOpacity style={styles.sosBtn} onPress={triggerSOS}>
             <Text style={styles.btnText}>🚨 SOS</Text>
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Autocomplete Search Bar */}
-      <View style={styles.searchWrapper}>
-        <View style={styles.searchRow}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Type city, district, or river basin (e.g. Rajpur, Haridwar)..."
-            placeholderTextColor="#94a3b8"
-            value={searchQuery}
-            onChangeText={handleQueryChange}
-            onSubmitEditing={handleManualSearch}
-          />
-          {isSearching && (
-            <ActivityIndicator size="small" color="#38bdf8" style={styles.searchSpinner} />
-          )}
-          <TouchableOpacity style={styles.searchBtn} onPress={handleManualSearch}>
-            <Text style={styles.btnText}>Search</Text>
-          </TouchableOpacity>
-        </View>
+      {/* Geocoding Search */}
+      <View style={styles.searchContainer}>
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search city, basin, or river (e.g., Patna, Guwahati)..."
+          placeholderTextColor="#94a3b8"
+          value={searchQuery}
+          onChangeText={handleSearchChange}
+        />
+        {isSearching && <ActivityIndicator style={styles.searchSpinner} color="#38bdf8" />}
 
-        {/* Floating Suggestion Overlays */}
-        {suggestions.length > 0 && (
-          <View style={styles.suggestionsContainer}>
-            {suggestions.map((item, index) => (
+        {showDropdown && searchResults.length > 0 && (
+          <View style={styles.dropdown}>
+            {searchResults.map((item) => (
               <TouchableOpacity
-                key={item.place_id || index}
-                style={styles.suggestionItem}
-                onPress={() => handleSelectSuggestion(item)}
+                key={item.place_id}
+                style={styles.dropdownItem}
+                onPress={() => selectLocation(item)}
               >
-                <Text style={styles.suggestionTitle}>📍 {item.name || item.display_name.split(',')[0]}</Text>
-                <Text style={styles.suggestionSub} numberOfLines={1}>
-                  {item.display_name}
+                <Text style={styles.dropdownText} numberOfLines={1}>
+                  📍 {item.display_name}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -388,151 +340,132 @@ export default function App() {
         )}
       </View>
 
-      {/* Dynamic Advisory Banner */}
-      <View style={[styles.advisoryBanner, { backgroundColor: riskColor }]}>
-        <Text style={styles.advisoryTitle}>⚠️ {currentRisk} ALERT ACTIVE</Text>
-        <Text style={styles.advisoryText}>{currentAdvisory}</Text>
+      {/* Region Banner */}
+      <View style={styles.regionBanner}>
+        <Text style={styles.regionText}>
+          📍 Monitored Region: <Text style={styles.regionHighlight}>{regionName}</Text> ({coords.lat.toFixed(2)}, {coords.lon.toFixed(2)})
+        </Text>
       </View>
 
-      {/* Scenario Stress-Test Engine */}
-      <View style={styles.engineCard}>
-        <Text style={styles.sectionTitle}>Scenario Stress-Test Engine</Text>
-        <Text style={styles.subtext}>Simulate extreme cloudbursts or upstream dam releases to test risk models:</Text>
-        <View style={styles.simButtonsRow}>
-          <TouchableOpacity
-            style={[styles.simBtn, { backgroundColor: '#2563eb' }]}
-            onPress={() => runSimulation('cloudburst')}
-          >
-            <Text style={styles.simBtnText}>⚡ Cloudburst (+65mm)</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.simBtn, { backgroundColor: '#d97706' }]}
-            onPress={() => runSimulation('dam_release')}
-          >
-            <Text style={styles.simBtnText}>⚠️ Dam Release (500m³/s)</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.simBtn, { backgroundColor: '#dc2626' }]}
-            onPress={() => runSimulation('catastrophic')}
-          >
-            <Text style={styles.simBtnText}>🚨 Catastrophic Flood</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      {/* Telemetry Card */}
+      {loading ? (
+        <ActivityIndicator size="large" color="#38bdf8" style={{ marginVertical: 30 }} />
+      ) : (
+        telemetry && (
+          <View style={[styles.card, { borderLeftColor: getRiskColor(telemetry.riskLevel), borderLeftWidth: 6 }]}>
+            <View style={styles.badgeRow}>
+              <View style={[styles.badge, { backgroundColor: getRiskColor(telemetry.riskLevel) }]}>
+                <Text style={styles.badgeText}>{telemetry.riskLevel} RISK</Text>
+              </View>
+              <Text style={styles.riskScore}>Index: {telemetry.compositeRiskScore}/100</Text>
+            </View>
+            <Text style={styles.advisory}>{telemetry.advisoryMessage}</Text>
 
-      {/* Inundation Radar Frame */}
-      <View style={styles.mapContainer}>
+            <View style={styles.metricsGrid}>
+              <View style={styles.metricBox}>
+                <Text style={styles.metricVal}>{telemetry.hydrology.riverDischargeM3s} m³/s</Text>
+                <Text style={styles.metricLbl}>Peak Discharge</Text>
+              </View>
+              <View style={styles.metricBox}>
+                <Text style={styles.metricVal}>{telemetry.hydrology.crestTimeHours} Hours</Text>
+                <Text style={styles.metricLbl}>Crest Arrival</Text>
+              </View>
+              <View style={styles.metricBox}>
+                <Text style={styles.metricVal}>{telemetry.weather.projected72hRainfallMm} mm</Text>
+                <Text style={styles.metricLbl}>72h Rain Accumulation</Text>
+              </View>
+              <View style={styles.metricBox}>
+                <Text style={styles.metricVal}>{telemetry.weather.soilMoistureIndex}%</Text>
+                <Text style={styles.metricLbl}>Soil Saturation</Text>
+              </View>
+            </View>
+          </View>
+        )
+      )}
+
+      {/* Map */}
+      <Text style={styles.sectionHeader}>Live Radar & Inundation Map</Text>
+      <View style={styles.mapCard}>
         {Platform.OS === 'web' ? (
           <iframe
-            title="Inundation Radar"
-            src={mapUrl}
+            title="Radar Inundation Map"
+            src={mapEmbedUrl}
             style={{ width: '100%', height: 260, border: 'none', borderRadius: 8 }}
           />
         ) : (
-          <View style={styles.mapFallback}>
-            <Text style={{ color: '#fff' }}>Radar Active: ({coords.lat.toFixed(2)}, {coords.lon.toFixed(2)})</Text>
+          <View style={styles.mobileMapFallback}>
+            <Text style={styles.cardText}>Interactive Map Active at ({coords.lat.toFixed(2)}, {coords.lon.toFixed(2)})</Text>
           </View>
         )}
-        <View style={styles.mapTag}>
-          <Text style={styles.mapTagText}>RADAR INUNDATION ({coords.lat.toFixed(2)}°, {coords.lon.toFixed(2)}°)</Text>
-        </View>
       </View>
 
-      {/* 7-Day Hydro-Discharge Forecast */}
+      {/* 7-Day Forecast Chart */}
+      <Text style={styles.sectionHeader}>7-Day River Discharge Forecast (m³/s)</Text>
       <View style={styles.chartCard}>
-        <View style={styles.chartHeader}>
-          <Text style={styles.sectionTitle}>📈 7-Day Hydro-Discharge Forecast</Text>
-          <Text style={styles.subtext}>m³/s flow</Text>
-        </View>
         <View style={styles.barChartRow}>
           {forecastBars.map((val, idx) => {
-            const maxVal = Math.max(...forecastBars, 300);
-            const barHeight = Math.min(100, Math.max(20, (val / maxVal) * 100));
-            const isPeak = val === Math.max(...forecastBars);
+            const heightPct = Math.min(100, Math.max(15, (val / 1200) * 100));
             return (
               <View key={idx} style={styles.barCol}>
-                <Text style={styles.barVal}>{val}</Text>
-                <View style={styles.barTrack}>
-                  <View
-                    style={[
-                      styles.barFill,
-                      { height: `${barHeight}%`, backgroundColor: isPeak ? '#ef4444' : '#0284c7' },
-                    ]}
-                  />
-                </View>
-                <Text style={styles.barDay}>D+{idx + 1}</Text>
+                <Text style={styles.barValue}>{Math.round(val)}</Text>
+                <View style={[styles.bar, { height: `${heightPct}%`, backgroundColor: val > 500 ? '#ef4444' : '#38bdf8' }]} />
+                <Text style={styles.barLabel}>D{idx + 1}</Text>
               </View>
             );
           })}
         </View>
       </View>
 
-      {/* Telemetry Metrics Grid */}
-      <View style={styles.metricsGrid}>
-        <View style={styles.metricCard}>
-          <Text style={styles.metricLabel}>Peak Discharge</Text>
-          <Text style={styles.metricVal}>{peakDischarge} m³/s</Text>
-          <Text style={styles.metricSub}>Basin hydro flow</Text>
-        </View>
-        <View style={styles.metricCard}>
-          <Text style={styles.metricLabel}>Crest Surge In</Text>
-          <Text style={styles.metricVal}>{crestHours} Hours</Text>
-          <Text style={styles.metricSub}>Forecast peak window</Text>
-        </View>
-        <View style={styles.metricCard}>
-          <Text style={styles.metricLabel}>72h Rain Accumulation</Text>
-          <Text style={styles.metricVal}>{rainAccum} mm</Text>
-          <Text style={styles.metricSub}>Precipitation volume</Text>
-        </View>
-        <View style={styles.metricCard}>
-          <Text style={styles.metricLabel}>Soil Moisture</Text>
-          <Text style={styles.metricVal}>{soilMoisture}%</Text>
-          <Text style={styles.metricSub}>Saturation index</Text>
-        </View>
+      {/* Stress-Test Engine */}
+      <Text style={styles.sectionHeader}>Scenario Stress-Test Engine</Text>
+      <View style={styles.simButtonsRow}>
+        <TouchableOpacity style={styles.simBtn} onPress={() => runSimulation('cloudburst')}>
+          <Text style={styles.simBtnText}>⚡ Cloudburst (+65mm)</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.simBtn} onPress={() => runSimulation('dam_release')}>
+          <Text style={styles.simBtnText}>🌊 Dam Release (500m³/s)</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.simBtn, { backgroundColor: '#7f1d1d' }]} onPress={() => runSimulation('catastrophic')}>
+          <Text style={styles.simBtnText}>🚨 Catastrophic Flood</Text>
+        </TouchableOpacity>
       </View>
 
-      {/* Designated Safe Evacuation Shelters */}
-      <View style={styles.shelterSection}>
-        <Text style={styles.sectionTitle}>Designated Safe Evacuation Shelters</Text>
-        <View style={styles.shelterCard}>
+      {/* Safe Shelters */}
+      <Text style={styles.sectionHeader}>Designated Safe Evacuation Shelters</Text>
+      {shelters.map((s) => (
+        <View key={s.id} style={styles.shelterCard}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.shelterName}>District Disaster Relief Center</Text>
-            <Text style={styles.shelterSub}>1.3 km away • 210 slots open</Text>
+            <Text style={styles.shelterName}>{s.name}</Text>
+            <Text style={styles.shelterInfo}>{s.distanceKm} km away • {s.capacitySlots} slots open</Text>
           </View>
           <TouchableOpacity
             style={styles.evacuateBtn}
-            onPress={() => window.open(`https://www.google.com/maps/search/hospital+shelter/@${coords.lat},${coords.lon},14z`)}
+            onPress={() => {
+              if (Platform.OS === 'web') {
+                window.open(`https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}`, '_blank');
+              } else {
+                alert(`Routing to ${s.name}...`);
+              }
+            }}
           >
             <Text style={styles.btnText}>Evacuate ➔</Text>
           </TouchableOpacity>
         </View>
-        <View style={styles.shelterCard}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.shelterName}>Higher Elevation Municipal Complex</Text>
-            <Text style={styles.shelterSub}>2.1 km away • 450 slots open</Text>
-          </View>
-          <TouchableOpacity
-            style={styles.evacuateBtn}
-            onPress={() => window.open(`https://www.google.com/maps/search/higher+ground+shelter/@${coords.lat},${coords.lon},14z`)}
-          >
-            <Text style={styles.btnText}>Evacuate ➔</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      ))}
 
       {/* Crowdsourced Inundation Feed */}
-      <View style={styles.feedHeaderRow}>
-        <Text style={styles.sectionTitle}>Crowdsourced Inundation Feed</Text>
-        <TouchableOpacity style={styles.reportBtn} onPress={() => setModalVisible(true)}>
+      <View style={styles.sectionHeaderRow}>
+        <Text style={styles.sectionHeader}>Crowdsourced Inundation Feed</Text>
+        <TouchableOpacity style={styles.addBtn} onPress={() => setModalVisible(true)}>
           <Text style={styles.btnText}>+ Report Hazard</Text>
         </TouchableOpacity>
       </View>
 
-      {hazards.map((item) => (
-        <View key={item.id} style={styles.hazardCard}>
-          <Text style={styles.hazardType}>⚠️ {item.type}</Text>
-          <Text style={styles.hazardDesc}>{item.description}</Text>
-          <Text style={styles.hazardTime}>{item.timestamp || 'Recent'}</Text>
+      {hazards.map((h, i) => (
+        <View key={h.id || i} style={styles.feedCard}>
+          <Text style={styles.feedType}>⚠️ {h.type}</Text>
+          <Text style={styles.feedDesc}>{h.description}</Text>
+          <Text style={styles.feedTime}>{h.timestamp || 'Just now'}</Text>
         </View>
       ))}
 
@@ -540,32 +473,32 @@ export default function App() {
       <Modal visible={modalVisible} transparent animationType="slide">
         <View style={styles.modalBackdrop}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Report Environmental Hazard</Text>
-            <View style={styles.hazardTypeRow}>
-              {['WATERLOGGED', 'ROAD BLOCKED', 'EVACUATION NEEDED'].map((t) => (
+            <Text style={styles.modalTitle}>File Live Hazard Report</Text>
+            <View style={styles.typeSelectorRow}>
+              {['WATERLOGGED', 'ROAD BLOCKED', 'RIVER OVERFLOW', 'EVACUATION NEEDED'].map((t) => (
                 <TouchableOpacity
                   key={t}
-                  style={[styles.typePill, hazardType === t && styles.typePillActive]}
+                  style={[styles.typeOption, hazardType === t && styles.typeOptionActive]}
                   onPress={() => setHazardType(t)}
                 >
-                  <Text style={styles.typePillText}>{t}</Text>
+                  <Text style={[styles.typeOptionText, hazardType === t && styles.typeOptionTextActive]}>{t}</Text>
                 </TouchableOpacity>
               ))}
             </View>
             <TextInput
               style={styles.modalInput}
-              placeholder="Describe situation, water depth, blocked streets..."
-              placeholderTextColor="#64748b"
-              multiline
-              numberOfLines={3}
+              placeholder="Describe situation (e.g. Submerged culvert, 2ft flow)..."
+              placeholderTextColor="#94a3b8"
               value={hazardDesc}
               onChangeText={setHazardDesc}
+              multiline
+              numberOfLines={3}
             />
-            <View style={styles.modalActionRow}>
+            <View style={styles.modalBtnRow}>
               <TouchableOpacity style={styles.cancelBtn} onPress={() => setModalVisible(false)}>
                 <Text style={styles.btnText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.submitModalBtn} onPress={submitHazard}>
+              <TouchableOpacity style={styles.submitBtn} onPress={submitHazard}>
                 <Text style={styles.btnText}>Submit Report</Text>
               </TouchableOpacity>
             </View>
@@ -577,88 +510,66 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0b1329', padding: 16 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  regionText: { fontSize: 18, fontWeight: '700', color: '#f8fafc' },
-  riskBadge: { fontSize: 13, fontWeight: '700', marginTop: 2 },
-  headerButtons: { flexDirection: 'row', gap: 8 },
-  sitrepBtn: { backgroundColor: '#1e293b', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6 },
-  sosBtn: { backgroundColor: '#dc2626', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6 },
-  btnText: { color: '#ffffff', fontWeight: '600', fontSize: 13 },
-  searchWrapper: { position: 'relative', zIndex: 100, marginBottom: 12 },
-  searchRow: { flexDirection: 'row', gap: 8, position: 'relative' },
-  searchInput: {
-    flex: 1,
-    backgroundColor: '#1e293b',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: '#ffffff',
-    fontSize: 14,
-  },
-  searchSpinner: { position: 'absolute', right: 90, top: 12 },
-  searchBtn: { backgroundColor: '#3b82f6', justifyContent: 'center', paddingHorizontal: 16, borderRadius: 8 },
-  suggestionsContainer: {
-    position: 'absolute',
-    top: 48,
-    left: 0,
-    right: 0,
-    backgroundColor: '#0f172a',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#334155',
-    elevation: 8,
-    zIndex: 999,
-  },
-  suggestionItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#1e293b' },
-  suggestionTitle: { color: '#38bdf8', fontWeight: '700', fontSize: 13 },
-  suggestionSub: { color: '#94a3b8', fontSize: 11, marginTop: 2 },
-  advisoryBanner: { padding: 12, borderRadius: 8, marginBottom: 14 },
-  advisoryTitle: { color: '#ffffff', fontWeight: '800', fontSize: 13, textTransform: 'uppercase', marginBottom: 2 },
-  advisoryText: { color: '#ffffff', fontWeight: '500', fontSize: 12 },
-  engineCard: { backgroundColor: '#131e3a', padding: 12, borderRadius: 8, marginBottom: 14 },
-  sectionTitle: { color: '#cbd5e1', fontSize: 14, fontWeight: '700', marginBottom: 6 },
-  subtext: { color: '#64748b', fontSize: 11, marginBottom: 8 },
-  simButtonsRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
-  simBtn: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6 },
-  simBtnText: { color: '#fff', fontSize: 12, fontWeight: '600' },
-  mapContainer: { height: 260, borderRadius: 8, overflow: 'hidden', marginBottom: 14, position: 'relative', backgroundColor: '#1e293b' },
-  mapFallback: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  mapTag: { position: 'absolute', bottom: 8, left: 8, backgroundColor: 'rgba(0,0,0,0.75)', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 4 },
-  mapTagText: { color: '#f97316', fontSize: 11, fontWeight: '700' },
-  chartCard: { backgroundColor: '#131e3a', padding: 14, borderRadius: 8, marginBottom: 14 },
-  chartHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  barChartRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 110, paddingTop: 10 },
-  barCol: { alignItems: 'center', flex: 1 },
-  barVal: { color: '#94a3b8', fontSize: 10, marginBottom: 4 },
-  barTrack: { height: 75, width: 14, backgroundColor: '#1e293b', borderRadius: 4, justifyContent: 'flex-end', overflow: 'hidden' },
-  barFill: { width: '100%', borderRadius: 4 },
-  barDay: { color: '#64748b', fontSize: 10, marginTop: 4 },
-  metricsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
-  metricCard: { flex: 1, minWidth: '45%', backgroundColor: '#131e3a', padding: 12, borderRadius: 8 },
-  metricLabel: { color: '#94a3b8', fontSize: 11, fontWeight: '500' },
-  metricVal: { color: '#f8fafc', fontSize: 18, fontWeight: '700', marginTop: 3 },
-  metricSub: { color: '#475569', fontSize: 10, marginTop: 2 },
-  shelterSection: { marginBottom: 14 },
-  shelterCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#131e3a', padding: 12, borderRadius: 8, marginBottom: 8 },
-  shelterName: { color: '#f8fafc', fontSize: 13, fontWeight: '600' },
-  shelterSub: { color: '#94a3b8', fontSize: 11, marginTop: 2 },
-  evacuateBtn: { backgroundColor: '#2563eb', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6 },
-  feedHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  reportBtn: { backgroundColor: '#0284c7', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6 },
-  hazardCard: { backgroundColor: '#131e3a', padding: 12, borderRadius: 8, marginBottom: 8 },
-  hazardType: { color: '#f59e0b', fontWeight: '700', fontSize: 12 },
-  hazardDesc: { color: '#cbd5e1', fontSize: 12, marginTop: 4 },
-  hazardTime: { color: '#64748b', fontSize: 10, marginTop: 4 },
-  modalBackdrop: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.75)' },
-  modalContent: { width: '90%', maxWidth: 440, backgroundColor: '#0f172a', padding: 20, borderRadius: 12 },
-  modalTitle: { color: '#fff', fontSize: 16, fontWeight: '700', marginBottom: 12 },
-  hazardTypeRow: { flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' },
-  typePill: { paddingVertical: 4, paddingHorizontal: 8, borderRadius: 4, backgroundColor: '#1e293b' },
-  typePillActive: { backgroundColor: '#f97316' },
-  typePillText: { color: '#fff', fontSize: 11, fontWeight: '600' },
-  modalInput: { backgroundColor: '#1e293b', color: '#fff', padding: 10, borderRadius: 6, marginBottom: 14, textAlignVertical: 'top' },
-  modalActionRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
-  cancelBtn: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6, backgroundColor: '#334155' },
-  submitModalBtn: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6, backgroundColor: '#0284c7' },
+  container: { flex: 1, backgroundColor: '#0f172a' },
+  scrollContent: { padding: 16, paddingBottom: 40 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  title: { fontSize: 24, fontWeight: '900', color: '#f8fafc' },
+  subtitle: { fontSize: 12, color: '#94a3b8', marginTop: 2 },
+  headerActions: { flexDirection: 'row', gap: 8 },
+  sosBtn: { backgroundColor: '#ef4444', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8 },
+  btnText: { color: '#ffffff', fontWeight: 'bold', fontSize: 13 },
+  searchContainer: { position: 'relative', zIndex: 50, marginBottom: 12 },
+  searchInput: { backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#334155', borderRadius: 8, padding: 12, color: '#f8fafc', fontSize: 14 },
+  searchSpinner: { position: 'absolute', right: 12, top: 12 },
+  dropdown: { position: 'absolute', top: 50, left: 0, right: 0, backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#475569', borderRadius: 8, zIndex: 100, shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 8, elevation: 10 },
+  dropdownItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#334155' },
+  dropdownText: { color: '#e2e8f0', fontSize: 13 },
+  regionBanner: { backgroundColor: '#1e293b', padding: 10, borderRadius: 8, marginBottom: 16, borderWidth: 1, borderColor: '#334155' },
+  regionText: { color: '#94a3b8', fontSize: 13 },
+  regionHighlight: { color: '#38bdf8', fontWeight: 'bold' },
+  card: { backgroundColor: '#1e293b', padding: 16, borderRadius: 8, marginBottom: 16 },
+  badgeRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
+  badgeText: { color: '#ffffff', fontWeight: 'bold', fontSize: 12 },
+  riskScore: { color: '#cbd5e1', fontWeight: 'bold', fontSize: 14 },
+  advisory: { color: '#f1f5f9', fontSize: 14, lineHeight: 20 },
+  metricsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
+  metricBox: { flex: 1, minWidth: '45%', backgroundColor: '#0f172a', padding: 10, borderRadius: 6, borderWidth: 1, borderColor: '#334155' },
+  metricVal: { color: '#38bdf8', fontWeight: 'bold', fontSize: 15 },
+  metricLbl: { color: '#94a3b8', fontSize: 11, marginTop: 2 },
+  sectionHeader: { fontSize: 16, fontWeight: 'bold', color: '#f8fafc', marginVertical: 10 },
+  sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 10 },
+  mapCard: { backgroundColor: '#1e293b', borderRadius: 8, overflow: 'hidden', marginBottom: 16, borderWidth: 1, borderColor: '#334155' },
+  mobileMapFallback: { height: 200, justifyContent: 'center', alignItems: 'center' },
+  cardText: { color: '#94a3b8' },
+  chartCard: { backgroundColor: '#1e293b', padding: 16, borderRadius: 8, marginBottom: 16, borderWidth: 1, borderColor: '#334155' },
+  barChartRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 130, paddingTop: 20 },
+  barCol: { alignItems: 'center', flex: 1, height: '100%', justifyContent: 'flex-end' },
+  bar: { width: 14, borderRadius: 4 },
+  barValue: { color: '#94a3b8', fontSize: 9, marginBottom: 4 },
+  barLabel: { color: '#64748b', fontSize: 11, marginTop: 4 },
+  simButtonsRow: { flexDirection: 'row', gap: 8, marginBottom: 16 },
+  simBtn: { flex: 1, backgroundColor: '#1e293b', padding: 10, borderRadius: 8, borderWidth: 1, borderColor: '#334155', alignItems: 'center' },
+  simBtnText: { color: '#e2e8f0', fontSize: 11, fontWeight: '600' },
+  shelterCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1e293b', padding: 14, borderRadius: 8, marginBottom: 10, borderWidth: 1, borderColor: '#334155' },
+  shelterName: { color: '#f8fafc', fontWeight: 'bold', fontSize: 13 },
+  shelterInfo: { color: '#94a3b8', fontSize: 11, marginTop: 2 },
+  evacuateBtn: { backgroundColor: '#2563eb', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6 },
+  addBtn: { backgroundColor: '#0284c7', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6 },
+  feedCard: { backgroundColor: '#1e293b', padding: 12, borderRadius: 8, marginBottom: 8, borderWidth: 1, borderColor: '#334155' },
+  feedType: { color: '#f59e0b', fontWeight: 'bold', fontSize: 12 },
+  feedDesc: { color: '#f8fafc', fontSize: 13, marginVertical: 4 },
+  feedTime: { color: '#64748b', fontSize: 11 },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', padding: 20 },
+  modalContent: { backgroundColor: '#1e293b', padding: 20, borderRadius: 12, borderWidth: 1, borderColor: '#475569' },
+  modalTitle: { color: '#f8fafc', fontSize: 18, fontWeight: 'bold', marginBottom: 14 },
+  typeSelectorRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 },
+  typeOption: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6, borderWidth: 1, borderColor: '#475569' },
+  typeOptionActive: { backgroundColor: '#0284c7', borderColor: '#38bdf8' },
+  typeOptionText: { color: '#94a3b8', fontSize: 11, fontWeight: 'bold' },
+  typeOptionTextActive: { color: '#ffffff' },
+  modalInput: { backgroundColor: '#0f172a', borderWidth: 1, borderColor: '#334155', borderRadius: 8, padding: 10, color: '#f8fafc', fontSize: 13, minHeight: 80, textAlignVertical: 'top', marginBottom: 14 },
+  modalBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
+  cancelBtn: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 6, backgroundColor: '#475569' },
+  submitBtn: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 6, backgroundColor: '#0284c7' },
 });
