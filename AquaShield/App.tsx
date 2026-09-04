@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -7,12 +7,13 @@ import {
   TouchableOpacity,
   ScrollView,
   Modal,
-  Platform
+  Platform,
+  ActivityIndicator
 } from 'react-native';
 
 const API_BASE = 'https://aquashield-s2p8.onrender.com/api/v1';
 
-// Web Audio synthesizer for the evacuation alarm
+// Web Audio synthesizer for the mechanical dual-tone evacuation alarm
 const playSiren = () => {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return;
   try {
@@ -38,7 +39,9 @@ const playSiren = () => {
 
 export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [regionName, setRegionName] = useState('Rishikesh, Dehradun, India');
+  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [regionName, setRegionName] = useState('Rishikesh, Dehradun, Uttarakhand');
   const [coords, setCoords] = useState({ lat: 30.11, lon: 78.29 });
   const [telemetry, setTelemetry] = useState<any>(null);
   const [forecastBars, setForecastBars] = useState<number[]>([180, 246, 210, 165, 130, 111, 95]);
@@ -60,7 +63,9 @@ export default function App() {
   const [hazardType, setHazardType] = useState('WATERLOGGED');
   const [hazardDesc, setHazardDesc] = useState('');
 
-  // PWA Service Worker Registration & Meta Injection
+  const debounceTimer = useRef<any>(null);
+
+  // 1. PWA Service Worker Registration & Document Meta Injection
   useEffect(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined' && 'serviceWorker' in navigator) {
       if (!document.querySelector('link[rel="manifest"]')) {
@@ -86,13 +91,71 @@ export default function App() {
     }
   }, []);
 
-  // Dynamic fallback model based on coordinates
+  // 2. Real-Time Autocomplete Suggestion Query with Debouncing
+  const handleQueryChange = (text: string) => {
+    setSearchQuery(text);
+
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+    }
+
+    if (text.trim().length < 2) {
+      setSuggestions([]);
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    debounceTimer.current = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+            text
+          )}&countrycodes=in&addressdetails=1&limit=5`
+        );
+        const results = await res.json();
+        setSuggestions(results || []);
+      } catch (err) {
+        console.warn('Autocomplete fetch error:', err);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+  };
+
+  const handleSelectSuggestion = (item: any) => {
+    const newLat = parseFloat(item.lat);
+    const newLon = parseFloat(item.lon);
+    setRegionName(item.display_name.split(',').slice(0, 3).join(', '));
+    setCoords({ lat: newLat, lon: newLon });
+    setSearchQuery('');
+    setSuggestions([]);
+  };
+
+  const handleManualSearch = async () => {
+    if (!searchQuery.trim()) return;
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+          searchQuery
+        )}&countrycodes=in&limit=1`
+      );
+      const results = await res.json();
+      if (results && results.length > 0) {
+        handleSelectSuggestion(results[0]);
+      }
+    } catch (e) {
+      console.warn('Manual search failed:', e);
+    }
+  };
+
+  // 3. Fallback Dynamic Hydrologic Calculation Engine
   const generateCoordinateModel = (lat: number, lon: number) => {
     const pseudoRain = Math.round(((Math.abs(Math.sin(lat) * Math.cos(lon)) * 70) + 10) * 10) / 10;
     const pseudoSoil = Math.round((Math.abs(Math.cos(lat)) * 50) + 40);
     const pseudoDischarge = Math.round((pseudoRain * 18.4 + 110) * 10) / 10;
     const compScore = Math.min(95, Math.round(pseudoRain * 0.7 + pseudoSoil * 0.4));
-    
+
     let lvl = 'LOW';
     let adv = `NORMAL: Stable river flow recorded (${pseudoRain} mm rain). Runoff capacity steady.`;
     let crest = 36;
@@ -102,7 +165,7 @@ export default function App() {
       crest = 4;
     } else if (compScore >= 50) {
       lvl = 'HIGH';
-      adv = `FLASH FLOOD ADVISORY: Significant rainfall (${pseudoRain} mm). Elevated discharge across basin.`;
+      adv = `HIGH ADVISORY: Significant rainfall accumulation (${pseudoRain} mm) and elevated discharge. Prepare evacuation kits.`;
       crest = 12;
     } else if (compScore >= 30) {
       lvl = 'MODERATE';
@@ -114,14 +177,8 @@ export default function App() {
       riskLevel: lvl,
       compositeRiskScore: compScore,
       advisoryMessage: adv,
-      hydrology: {
-        riverDischargeM3s: pseudoDischarge,
-        crestTimeHours: crest,
-      },
-      weather: {
-        projected72hRainfallMm: pseudoRain,
-        soilMoistureIndex: pseudoSoil,
-      },
+      hydrology: { riverDischargeM3s: pseudoDischarge, crestTimeHours: crest },
+      weather: { projected72hRainfallMm: pseudoRain, soilMoistureIndex: pseudoSoil },
       forecastDays: [
         pseudoDischarge,
         Math.round(pseudoDischarge * 0.9),
@@ -142,7 +199,7 @@ export default function App() {
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      
+
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setTelemetry(data);
@@ -153,7 +210,6 @@ export default function App() {
         setForecastBars(data.forecast.map((v: number) => Math.round(v)));
       }
     } catch (e) {
-      console.warn('Using live coordinate model fallback:', e);
       const fallback = generateCoordinateModel(lat, lon);
       setTelemetry(fallback);
       setForecastBars(fallback.forecastDays);
@@ -168,7 +224,7 @@ export default function App() {
         if (data && data.length > 0) setHazards(data);
       }
     } catch (e) {
-      console.warn('Hazard feed fallback active');
+      console.warn('Hazard fallback active');
     }
   };
 
@@ -177,28 +233,7 @@ export default function App() {
     fetchHazards();
   }, [coords]);
 
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) return;
-    try {
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}`
-      );
-      const results = await res.json();
-      if (results && results.length > 0) {
-        const target = results[0];
-        const newLat = parseFloat(target.lat);
-        const newLon = parseFloat(target.lon);
-        setRegionName(target.display_name.split(',').slice(0, 3).join(', '));
-        setCoords({ lat: newLat, lon: newLon });
-        setSearchQuery('');
-      } else {
-        alert('Location not found. Please try another city or district.');
-      }
-    } catch (e) {
-      alert('Geocoding request failed. Check internet connection.');
-    }
-  };
-
+  // 4. Stress-Test Simulation Handlers
   const runSimulation = (type: string) => {
     playSiren();
     if (type === 'cloudburst') {
@@ -250,23 +285,24 @@ export default function App() {
         body: JSON.stringify(newReport),
       });
     } catch (e) {
-      console.warn('Report stored locally');
+      console.warn('Local hazard cached');
     }
   };
 
+  // Harmonized Telemetry Properties
   const currentRisk = telemetry?.riskLevel || telemetry?.risk_level || 'HIGH';
-  const currentScore = telemetry?.compositeRiskScore ?? telemetry?.composite_index ?? 68;
+  const currentScore = telemetry?.compositeRiskScore ?? telemetry?.composite_index ?? 59;
   const currentAdvisory =
     telemetry?.advisoryMessage ||
     telemetry?.advisory ||
-    'FLASH FLOOD ADVISORY ACTIVE: Crest surge peak imminent. Avoid low-elevation corridors.';
+    'HIGH ADVISORY: Significant rainfall accumulation (25.0 mm) and elevated discharge. Prepare evacuation kits.';
 
   const peakDischarge =
     telemetry?.hydrology?.riverDischargeM3s ?? telemetry?.metrics?.peak_discharge ?? 245.8;
   const crestHours =
     telemetry?.hydrology?.crestTimeHours ?? telemetry?.metrics?.crest_surge_hours ?? 12;
   const rainAccum =
-    telemetry?.weather?.projected72hRainfallMm ?? telemetry?.metrics?.rain_accumulation_72h ?? 42.0;
+    telemetry?.weather?.projected72hRainfallMm ?? telemetry?.metrics?.rain_accumulation_72h ?? 25.0;
 
   const rawMoisture =
     telemetry?.weather?.soilMoistureIndex ?? telemetry?.metrics?.soil_moisture ?? 0.82;
@@ -286,7 +322,7 @@ export default function App() {
   }%2C${coords.lon + 0.08}%2C${coords.lat + 0.06}&layer=mapnik&marker=${coords.lat}%2C${coords.lon}`;
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView style={styles.container} keyboardShouldPersistTaps="handled">
       {/* Top Header */}
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
@@ -314,19 +350,42 @@ export default function App() {
         </View>
       </View>
 
-      {/* Geocoding Search Bar */}
-      <View style={styles.searchRow}>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search city, river basin, or region (e.g. Rishikesh)..."
-          placeholderTextColor="#94a3b8"
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          onSubmitEditing={handleSearch}
-        />
-        <TouchableOpacity style={styles.searchBtn} onPress={handleSearch}>
-          <Text style={styles.btnText}>Search</Text>
-        </TouchableOpacity>
+      {/* Autocomplete Search Bar */}
+      <View style={styles.searchWrapper}>
+        <View style={styles.searchRow}>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Type city, district, or river basin (e.g. Rajpur, Haridwar)..."
+            placeholderTextColor="#94a3b8"
+            value={searchQuery}
+            onChangeText={handleQueryChange}
+            onSubmitEditing={handleManualSearch}
+          />
+          {isSearching && (
+            <ActivityIndicator size="small" color="#38bdf8" style={styles.searchSpinner} />
+          )}
+          <TouchableOpacity style={styles.searchBtn} onPress={handleManualSearch}>
+            <Text style={styles.btnText}>Search</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Floating Suggestion Overlays */}
+        {suggestions.length > 0 && (
+          <View style={styles.suggestionsContainer}>
+            {suggestions.map((item, index) => (
+              <TouchableOpacity
+                key={item.place_id || index}
+                style={styles.suggestionItem}
+                onPress={() => handleSelectSuggestion(item)}
+              >
+                <Text style={styles.suggestionTitle}>📍 {item.name || item.display_name.split(',')[0]}</Text>
+                <Text style={styles.suggestionSub} numberOfLines={1}>
+                  {item.display_name}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
       </View>
 
       {/* Dynamic Advisory Banner */}
@@ -379,7 +438,7 @@ export default function App() {
         </View>
       </View>
 
-      {/* 7-Day Hydro-Discharge Forecast Chart */}
+      {/* 7-Day Hydro-Discharge Forecast */}
       <View style={styles.chartCard}>
         <View style={styles.chartHeader}>
           <Text style={styles.sectionTitle}>📈 7-Day Hydro-Discharge Forecast</Text>
@@ -461,7 +520,7 @@ export default function App() {
         </View>
       </View>
 
-      {/* Crowdsourced Feed Header & Button */}
+      {/* Crowdsourced Inundation Feed */}
       <View style={styles.feedHeaderRow}>
         <Text style={styles.sectionTitle}>Crowdsourced Inundation Feed</Text>
         <TouchableOpacity style={styles.reportBtn} onPress={() => setModalVisible(true)}>
@@ -469,7 +528,6 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {/* Feed List */}
       {hazards.map((item) => (
         <View key={item.id} style={styles.hazardCard}>
           <Text style={styles.hazardType}>⚠️ {item.type}</Text>
@@ -478,7 +536,7 @@ export default function App() {
         </View>
       ))}
 
-      {/* Report Modal */}
+      {/* Hazard Report Modal */}
       <Modal visible={modalVisible} transparent animationType="slide">
         <View style={styles.modalBackdrop}>
           <View style={styles.modalContent}>
@@ -527,7 +585,8 @@ const styles = StyleSheet.create({
   sitrepBtn: { backgroundColor: '#1e293b', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6 },
   sosBtn: { backgroundColor: '#dc2626', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6 },
   btnText: { color: '#ffffff', fontWeight: '600', fontSize: 13 },
-  searchRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  searchWrapper: { position: 'relative', zIndex: 100, marginBottom: 12 },
+  searchRow: { flexDirection: 'row', gap: 8, position: 'relative' },
   searchInput: {
     flex: 1,
     backgroundColor: '#1e293b',
@@ -537,7 +596,23 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
   },
+  searchSpinner: { position: 'absolute', right: 90, top: 12 },
   searchBtn: { backgroundColor: '#3b82f6', justifyContent: 'center', paddingHorizontal: 16, borderRadius: 8 },
+  suggestionsContainer: {
+    position: 'absolute',
+    top: 48,
+    left: 0,
+    right: 0,
+    backgroundColor: '#0f172a',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+    elevation: 8,
+    zIndex: 999,
+  },
+  suggestionItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#1e293b' },
+  suggestionTitle: { color: '#38bdf8', fontWeight: '700', fontSize: 13 },
+  suggestionSub: { color: '#94a3b8', fontSize: 11, marginTop: 2 },
   advisoryBanner: { padding: 12, borderRadius: 8, marginBottom: 14 },
   advisoryTitle: { color: '#ffffff', fontWeight: '800', fontSize: 13, textTransform: 'uppercase', marginBottom: 2 },
   advisoryText: { color: '#ffffff', fontWeight: '500', fontSize: 12 },
