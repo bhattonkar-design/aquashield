@@ -91,48 +91,51 @@ export default function App() {
   const [hazardType, setHazardType] = useState<string>('WATERLOGGED');
   const [hazardDesc, setHazardDesc] = useState<string>('');
 
-  const playSiren = async () => {
-    // 1. Trigger phone emergency vibration (works on mobile browsers/PWA)
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+  const playSiren = () => {
+    // 1. Mobile Physical Vibration (Immediate synchronous call)
+    if (typeof window !== 'undefined' && 'navigator' in window && window.navigator.vibrate) {
       try {
-        navigator.vibrate([300, 100, 300, 100, 500, 100, 500]);
-      } catch (e) {
-        console.warn('Vibration not permitted:', e);
+        window.navigator.vibrate([400, 150, 400, 150, 600]);
+      } catch (err) {
+        console.warn('Vibration blocked by browser policy:', err);
       }
     }
 
-    // 2. Play audible siren with mobile AudioContext unlock
+    // 2. Audible Siren (Synchronous audio context creation on user gesture)
     if (typeof window !== 'undefined') {
       try {
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        if (!AudioContextClass) return;
-        const ctx = new AudioContextClass();
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
 
-        // Critical for mobile browsers: resume audio context if suspended
         if (ctx.state === 'suspended') {
-          await ctx.resume();
+          ctx.resume();
         }
 
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
 
         osc.type = 'sawtooth';
-        const now = ctx.currentTime;
-        osc.frequency.setValueAtTime(440, now);
-        osc.frequency.linearRampToValueAtTime(880, now + 0.3);
-        osc.frequency.linearRampToValueAtTime(440, now + 0.6);
-        osc.frequency.linearRampToValueAtTime(880, now + 0.9);
-        osc.frequency.linearRampToValueAtTime(440, now + 1.2);
+        const start = ctx.currentTime;
 
-        gain.gain.setValueAtTime(0.5, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 1.3);
+        // Oscillating alarm frequency
+        osc.frequency.setValueAtTime(500, start);
+        osc.frequency.linearRampToValueAtTime(950, start + 0.25);
+        osc.frequency.linearRampToValueAtTime(500, start + 0.5);
+        osc.frequency.linearRampToValueAtTime(950, start + 0.75);
+        osc.frequency.linearRampToValueAtTime(500, start + 1.0);
+
+        // Volume Profile
+        gain.gain.setValueAtTime(0.7, start);
+        gain.gain.exponentialRampToValueAtTime(0.01, start + 1.1);
 
         osc.connect(gain);
         gain.connect(ctx.destination);
-        osc.start(now);
-        osc.stop(now + 1.3);
+
+        osc.start(start);
+        osc.stop(start + 1.1);
       } catch (e) {
-        console.warn('Audio synthesis failed:', e);
+        console.warn('Web Audio synthesis failed:', e);
       }
     }
   };
@@ -151,7 +154,7 @@ export default function App() {
       setTelemetry({
         riskLevel: 'MODERATE',
         compositeRiskScore: 42,
-        advisoryMessage: 'Yamuna downstream discharge elevated. Monitor embankment buffer.',
+        advisoryMessage: 'Yamuna downstream discharge elevated. Embankment buffer monitored.',
         hydrology: { riverDischargeM3s: 142.5, crestTimeHours: 18 },
         weather: { projected72hRainfallMm: 38.4, soilMoistureIndex: 58 },
       });
@@ -215,14 +218,17 @@ export default function App() {
     setShowDropdown(false);
   };
 
-  const runSimulation = async (type: string) => {
+  const runSimulation = (type: string) => {
+    // 1. Play siren audio and trigger physical vibration synchronously
     playSiren();
-    try {
-      fetch(`${API_BASE}/simulate-flood-scenario?scenario=${type}`, { method: 'POST' });
-    } catch (e) {
-      console.warn('Backend sim trigger failed', e);
-    }
 
+    // 2. Transmit simulation trigger to backend Telegram webhook
+    fetch(`${API_BASE}/simulate-flood-scenario?scenario=${type}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }).catch((err) => console.warn('Sim dispatch failed:', err));
+
+    // 3. Update local dashboard telemetry
     if (type === 'cloudburst') {
       setTelemetry({
         riskLevel: 'HIGH',
@@ -264,7 +270,7 @@ export default function App() {
           lat: coords.lat,
           lon: coords.lon,
           regionName: regionName,
-          details: 'Urgent rescue response needed at coordinates',
+          details: 'Urgent rescue response needed at current coordinates',
         }),
       });
     } catch (e) {
