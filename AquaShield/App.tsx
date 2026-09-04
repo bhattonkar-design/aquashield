@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Modal,
   Platform,
+  Vibration,
 } from 'react-native';
 import { supabase } from './src/supabaseClient';
 import { generateEvacuationBriefingPdf } from './src/pdfExporter';
@@ -234,7 +235,6 @@ export default function App() {
       if (savedLang && TRANSLATIONS[savedLang]) {
         setCurrentLang(savedLang);
       } else {
-        // First-time user: display language selection permission modal
         setLangModalVisible(true);
       }
     }
@@ -297,21 +297,34 @@ export default function App() {
   const [hazardType, setHazardType] = useState<string>('WATERLOGGED');
   const [hazardDesc, setHazardDesc] = useState<string>('');
 
+  // Continuous Siren Engine with Hardware Vibration & Audio Unlocking
   const playSiren = () => {
-    if (typeof window !== 'undefined' && 'navigator' in window && window.navigator.vibrate) {
+    // 1. Cross-Platform Hardware Haptic Vibration
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined' && 'navigator' in window && window.navigator.vibrate) {
+        try {
+          // Sustained repeating vibration pulses (800ms pulse, 200ms gap)
+          window.navigator.vibrate([800, 200, 800, 200, 800, 200, 800, 200, 800]);
+        } catch (e) {
+          console.warn('Web vibration policy restriction:', e);
+        }
+      }
+    } else {
       try {
-        window.navigator.vibrate([400, 150, 400, 150, 600]);
-      } catch (err) {
-        console.warn('Vibration blocked by browser policy:', err);
+        Vibration.vibrate([0, 800, 200, 800, 200, 800, 200, 800], false);
+      } catch (e) {
+        console.warn('Native vibration call failed:', e);
       }
     }
 
+    // 2. Continuous 5.0-Second Acoustic Siren Modulation
     if (typeof window !== 'undefined') {
       try {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (!AudioCtx) return;
         const ctx = new AudioCtx();
 
+        // Unlock immediate audio playback on mobile browsers
         if (ctx.state === 'suspended') {
           ctx.resume();
         }
@@ -320,24 +333,29 @@ export default function App() {
         const gain = ctx.createGain();
 
         osc.type = 'sawtooth';
-        const start = ctx.currentTime;
 
-        osc.frequency.setValueAtTime(500, start);
-        osc.frequency.linearRampToValueAtTime(950, start + 0.25);
-        osc.frequency.linearRampToValueAtTime(500, start + 0.5);
-        osc.frequency.linearRampToValueAtTime(950, start + 0.75);
-        osc.frequency.linearRampToValueAtTime(500, start + 1.0);
+        const startTime = ctx.currentTime;
+        const duration = 5.0; // 5 full seconds of alert duration
 
-        gain.gain.setValueAtTime(0.7, start);
-        gain.gain.exponentialRampToValueAtTime(0.01, start + 1.1);
+        // Cyclic sweep between 450 Hz (deep horn) and 950 Hz (high alert)
+        for (let offset = 0; offset < duration; offset += 0.6) {
+          osc.frequency.setValueAtTime(450, startTime + offset);
+          osc.frequency.linearRampToValueAtTime(950, startTime + offset + 0.3);
+          osc.frequency.linearRampToValueAtTime(450, startTime + offset + 0.6);
+        }
+
+        // Maintain full volume output, ramping down gracefully at cutoff
+        gain.gain.setValueAtTime(0.9, startTime);
+        gain.gain.setValueAtTime(0.9, startTime + duration - 0.4);
+        gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
 
         osc.connect(gain);
         gain.connect(ctx.destination);
 
-        osc.start(start);
-        osc.stop(start + 1.1);
+        osc.start(startTime);
+        osc.stop(startTime + duration);
       } catch (e) {
-        console.warn('Web Audio synthesis failed:', e);
+        console.warn('AudioContext synthesis failed:', e);
       }
     }
   };

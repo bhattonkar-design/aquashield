@@ -27,6 +27,11 @@
         "apple-mobile-web-app-capable": "yes",
         "apple-mobile-web-app-status-bar-style": "black-translucent"
       }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "add81440-609d-4d09-b0d7-f0a5444eaa6b"
+      }
     }
   }
 }
