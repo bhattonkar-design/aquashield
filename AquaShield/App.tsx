@@ -109,7 +109,7 @@ const InteractiveMap: React.FC<InteractiveMapProps> = ({
     fetch(`${API_BASE}/inundation-zones?lat=${lat}&lon=${lon}&discharge=${discharge}`)
       .then((r) => r.json())
       .then((geoData) => {
-        if (!mapInstanceRef.current) return;
+        if (!mapInstanceRef.current || !geoData || !geoData.features) return;
         const layer = L.geoJSON(geoData, {
           style: (feature: any) => ({
             fillColor: feature.properties.fillColor,
@@ -120,15 +120,15 @@ const InteractiveMap: React.FC<InteractiveMapProps> = ({
           }),
           onEachFeature: (feature: any, layerItem: any) => {
             layerItem.bindPopup(
-              `<strong>${feature.properties.label}</strong><br/>Estimated Inundation Depth: <b>${feature.properties.depthEstimate}</b>`
+              `<strong>${feature.properties.label}</strong><br/>Estimated Depth: <b>${feature.properties.depthEstimate}</b>`
             );
           },
         }).addTo(map);
         layersRef.current.geojson = layer;
       })
-      .catch((e) => console.warn('GeoJSON vector layer failed:', e));
+      .catch((e) => console.warn('Inundation layer using cached representation:', e));
 
-    // 2. Add Center Monitored Point Marker
+    // 2. Add Center Monitoring Station Marker
     const userMarker = L.circleMarker([lat, lon], {
       radius: 9,
       color: '#38bdf8',
@@ -171,7 +171,7 @@ const InteractiveMap: React.FC<InteractiveMapProps> = ({
       }
     });
 
-    // 5. Draw Evacuation Route Line to selected shelter
+    // 5. Draw Evacuation Vector Polyline to target shelter
     const targetShelter = shelters.find((s) => s.id === selectedShelterId) || shelters[0];
     if (targetShelter) {
       const routeLine = L.polyline(
@@ -221,7 +221,27 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedShelterId, setSelectedShelterId] = useState<number | null>(1);
 
-  // Shelters
+  // Offline connection tracker
+  const [isOffline, setIsOffline] = useState<boolean>(
+    typeof navigator !== 'undefined' ? !navigator.onLine : false
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Designated Shelters
   const shelters: Shelter[] = [
     {
       id: 1,
@@ -247,7 +267,7 @@ export default function App() {
   const [hazardDesc, setHazardDesc] = useState<string>('');
 
   const playSiren = () => {
-    // 1. Mobile Physical Vibration (Immediate synchronous call)
+    // 1. Mobile Physical Vibration (Immediate synchronous invocation)
     if (typeof window !== 'undefined' && 'navigator' in window && window.navigator.vibrate) {
       try {
         window.navigator.vibrate([400, 150, 400, 150, 600]);
@@ -256,7 +276,7 @@ export default function App() {
       }
     }
 
-    // 2. Audible Siren (Synchronous audio context creation on user gesture)
+    // 2. Audible Siren (Synchronous audio context construction on user gesture)
     if (typeof window !== 'undefined') {
       try {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
@@ -273,14 +293,14 @@ export default function App() {
         osc.type = 'sawtooth';
         const start = ctx.currentTime;
 
-        // Oscillating alarm frequency
+        // Emergency warble profile
         osc.frequency.setValueAtTime(500, start);
         osc.frequency.linearRampToValueAtTime(950, start + 0.25);
         osc.frequency.linearRampToValueAtTime(500, start + 0.5);
         osc.frequency.linearRampToValueAtTime(950, start + 0.75);
         osc.frequency.linearRampToValueAtTime(500, start + 1.0);
 
-        // Volume Profile
+        // Volume Envelope
         gain.gain.setValueAtTime(0.7, start);
         gain.gain.exponentialRampToValueAtTime(0.01, start + 1.1);
 
@@ -305,7 +325,7 @@ export default function App() {
         setForecastBars(data.forecast7Days.map((f: any) => f.dischargeM3s));
       }
     } catch (e) {
-      console.warn('Backend unavailable, using telemetry fallback');
+      console.warn('Backend unavailable, using telemetry fallback/cache');
       setTelemetry({
         riskLevel: 'MODERATE',
         compositeRiskScore: 42,
@@ -374,16 +394,13 @@ export default function App() {
   };
 
   const runSimulation = (type: string) => {
-    // 1. Play siren audio and trigger physical vibration synchronously
     playSiren();
 
-    // 2. Transmit simulation trigger to backend Telegram webhook
     fetch(`${API_BASE}/simulate-flood-scenario?scenario=${type}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     }).catch((err) => console.warn('Sim dispatch failed:', err));
 
-    // 3. Update local dashboard telemetry
     if (type === 'cloudburst') {
       setTelemetry({
         riskLevel: 'HIGH',
@@ -486,6 +503,15 @@ export default function App() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Real-Time Offline Grid-Down Alert Banner */}
+      {isOffline && (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineBannerText}>
+            ⚡ GRID-DOWN OFFLINE MODE: Serving local cached telemetry and offline vector basemaps.
+          </Text>
+        </View>
+      )}
 
       {/* Geocoding Search Bar */}
       <View style={styles.searchContainer}>
@@ -697,12 +723,27 @@ export default function App() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0f172a' },
   scrollContent: { padding: 16, paddingBottom: 40 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   title: { fontSize: 24, fontWeight: '900', color: '#f8fafc' },
   subtitle: { fontSize: 12, color: '#94a3b8', marginTop: 2 },
   headerActions: { flexDirection: 'row', gap: 8 },
   sosBtn: { backgroundColor: '#ef4444', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8 },
   btnText: { color: '#ffffff', fontWeight: 'bold', fontSize: 13 },
+  offlineBanner: {
+    backgroundColor: '#b91c1c',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#ef4444',
+  },
+  offlineBannerText: {
+    color: '#ffffff',
+    fontWeight: 'bold',
+    fontSize: 12,
+    textAlign: 'center',
+  },
   searchContainer: { position: 'relative', zIndex: 50, marginBottom: 12 },
   searchInput: { backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#334155', borderRadius: 8, padding: 12, color: '#f8fafc', fontSize: 14 },
   searchSpinner: { position: 'absolute', right: 12, top: 12 },

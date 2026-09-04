@@ -58,5 +58,21 @@
   </head>
   <body>
     <div id="root"></div>
+
+    <!-- Register Service Worker -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker
+            .register('/sw.js')
+            .then((registration) => {
+              console.log('AquaShield Service Worker active at scope:', registration.scope);
+            })
+            .catch((error) => {
+              console.warn('Service Worker registration encountered an issue:', error);
+            });
+        });
+      }
+    </script>
   </body>
 </html>
