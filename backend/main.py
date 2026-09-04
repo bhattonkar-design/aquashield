@@ -1,7 +1,7 @@
-from fastapi import FastAPI, Query, BackgroundTasks
+from fastapi import FastAPI, Query, BackgroundTasks, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
 import urllib.request
 import json
 import os
@@ -10,8 +10,8 @@ from supabase import create_client, Client
 
 app = FastAPI(
     title="AquaShield Hydrological Telemetry & Dispatch API",
-    version="2.0.0",
-    description="Real-time river discharge forecasting, Supabase disaster persistence, and Telegram dispatch webhooks."
+    version="2.2.0",
+    description="Real-time river discharge forecasting, Supabase disaster persistence, and automated Telegram dispatch webhooks."
 )
 
 app.add_middleware(
@@ -22,36 +22,69 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Persistent storage & Alert configuration
+# ---------------------------------------------------------------------------
+# Credentials & Database Configuration
+# ---------------------------------------------------------------------------
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://aqkivwbsrmymogiilpyw.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8892785626:AAGBr72vvOVFPQHP-_Rx98ZWm2XUMqUgWtk")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "1889659746")
 
 supabase_client: Optional[Client] = None
+
 if SUPABASE_URL and SUPABASE_KEY:
     try:
         supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        print("Connected to Supabase PostgreSQL.")
+        print("INFO:     Connected successfully to Supabase PostgreSQL.")
     except Exception as err:
-        print(f"Failed to initialize Supabase client: {err}")
+        print(f"WARNING:  Failed to initialize Supabase client: {err}")
+else:
+    print("WARNING:  Supabase credentials missing, falling back to local memory store.")
 
-# Data Models
+# ---------------------------------------------------------------------------
+# Pydantic Schemas
+# ---------------------------------------------------------------------------
+class HydrologyMetric(BaseModel):
+    riverDischargeM3s: float
+    crestTimeHours: int
+
+class WeatherMetric(BaseModel):
+    projected72hRainfallMm: float
+    soilMoistureIndex: float
+
+class DailyForecast(BaseModel):
+    day: str
+    dischargeM3s: float
+    rainfallMm: float
+
+class FloodRiskResponse(BaseModel):
+    locationName: str
+    latitude: float
+    longitude: float
+    riskLevel: str
+    compositeRiskScore: int
+    advisoryMessage: str
+    hydrology: HydrologyMetric
+    weather: WeatherMetric
+    forecast7Days: List[DailyForecast]
+
 class HazardReport(BaseModel):
     id: Optional[int] = None
-    type: str
-    description: str
-    timestamp: Optional[str] = None
-    lat: Optional[float] = None
-    lon: Optional[float] = None
+    type: str = Field(..., example="WATERLOGGED")
+    description: str = Field(..., example="Culvert inundated near bypass route")
+    timestamp: Optional[str] = "Just now"
+    lat: Optional[float] = 27.18
+    lon: Optional[float] = 78.02
 
 class SOSPayload(BaseModel):
     lat: float
     lon: float
     regionName: str
-    details: Optional[str] = "Immediate rescue required at current coordinates"
+    details: Optional[str] = "Immediate civilian rescue required at current coordinates"
 
-# In-memory fallback
+# ---------------------------------------------------------------------------
+# In-Memory Seed Data
+# ---------------------------------------------------------------------------
 fallback_hazards: List[HazardReport] = [
     HazardReport(
         id=1,
@@ -71,10 +104,12 @@ fallback_hazards: List[HazardReport] = [
     )
 ]
 
-# Dispatch Dispatcher
+# ---------------------------------------------------------------------------
+# Telegram Dispatch Engine
+# ---------------------------------------------------------------------------
 async def send_telegram_notification(text: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram alert skipped: Missing credentials.")
+        print("WARNING:  Telegram alert skipped: missing credentials.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -86,11 +121,14 @@ async def send_telegram_notification(text: str):
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, json=payload, timeout=6.0)
             if resp.status_code != 200:
-                print(f"Telegram API warning ({resp.status_code}): {resp.text}")
+                print(f"WARNING:  Telegram API response ({resp.status_code}): {resp.text}")
     except Exception as e:
-        print(f"Failed to dispatch Telegram message: {e}")
+        print(f"ERROR:    Failed to dispatch Telegram message: {e}")
 
-def fetch_open_meteo(lat: float, lon: float):
+# ---------------------------------------------------------------------------
+# Live Hydrological Telemetry Gathering (Open-Meteo)
+# ---------------------------------------------------------------------------
+def fetch_open_meteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     url = (
         f"https://api.open-meteo.com/v1/forecast?"
         f"latitude={lat}&longitude={lon}&daily=precipitation_sum&"
@@ -99,42 +137,49 @@ def fetch_open_meteo(lat: float, lon: float):
     try:
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AquaShield/1.0"}
+            headers={"User-Agent": "AquaShield/2.2 (Disaster-Response-Telemetry)"}
         )
         with urllib.request.urlopen(req, timeout=4) as response:
             return json.loads(response.read().decode())
     except Exception as e:
-        print(f"Open-Meteo telemetry fetch failed: {e}")
+        print(f"WARNING:  Open-Meteo telemetry fetch failed: {e}")
         return None
 
-@app.get("/")
+# ---------------------------------------------------------------------------
+# API Routes
+# ---------------------------------------------------------------------------
+@app.get("/", tags=["Health"])
 def read_root():
     return {
         "status": "Online",
-        "service": "AquaShield Emergency Dispatch & Hydrological Engine",
-        "database": "Supabase PostgreSQL Active" if supabase_client else "In-Memory Fallback",
-        "telegram_alerts": "Enabled" if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID else "Missing Configuration"
+        "service": "AquaShield Early Warning Hydrological Engine",
+        "database_backend": "Supabase PostgreSQL Active" if supabase_client else "In-Memory Fallback",
+        "telegram_integration": "Enabled" if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID else "Disabled / Incomplete",
+        "version": "2.2.0"
     }
 
-@app.get("/api/v1/flood-risk")
+@app.get("/api/v1/flood-risk", response_model=FloodRiskResponse, tags=["Telemetry"])
 def get_flood_risk(lat: float = Query(27.18), lon: float = Query(78.02), background_tasks: BackgroundTasks = None):
     meteo_data = fetch_open_meteo(lat, lon)
     
     rain_72h = 12.0
     soil_saturation = 35.0
-    forecast_discharge = [90, 85, 80, 75, 70, 65, 60]
+    forecast_discharge = [90.0, 85.0, 80.0, 75.0, 70.0, 65.0, 60.0]
 
     if meteo_data and "daily" in meteo_data:
         daily_precip = meteo_data.get("daily", {}).get("precipitation_sum", [])
-        rain_72h = round(sum(daily_precip[:3]), 1) if len(daily_precip) >= 3 else 15.0
+        if len(daily_precip) >= 3:
+            rain_72h = round(sum(float(x) for x in daily_precip[:3] if x is not None), 1)
+        else:
+            rain_72h = 15.0
         
         hourly_soil = meteo_data.get("hourly", {}).get("soil_moisture_0_to_1cm", [])
         if hourly_soil:
-            recent_soil = [s for s in hourly_soil[:24] if s is not None]
+            recent_soil = [float(s) for s in hourly_soil[:24] if s is not None]
             if recent_soil:
-                soil_saturation = round((sum(recent_soil) / len(recent_soil)) * 100, 1)
+                soil_saturation = round((sum(recent_soil) / len(recent_soil)) * 100.0, 1)
 
-        forecast_discharge = [round(max(20.0, float(r) * 12.5 + 40.0), 1) for r in daily_precip[:7]]
+        forecast_discharge = [round(max(20.0, float(r if r is not None else 0.0) * 12.5 + 40.0), 1) for r in daily_precip[:7]]
         while len(forecast_discharge) < 7:
             forecast_discharge.append(50.0)
 
@@ -142,21 +187,21 @@ def get_flood_risk(lat: float = Query(27.18), lon: float = Query(78.02), backgro
 
     if composite_index >= 75:
         risk_level = "CATASTROPHIC"
-        advisory = f"CRITICAL ALERT: Dangerous riverbank surge ({rain_72h} mm). Urgent evacuation orders in effect!"
+        advisory = f"CRITICAL ALERT: Dangerous riverbank surge ({rain_72h} mm accumulation). Evacuation mandatory!"
         crest_hours = 4
         if background_tasks:
             msg = (
                 f"🚨 *AQUASHIELD CATASTROPHIC FLOOD ALERT*\n\n"
                 f"📍 *Coordinates:* `{lat}, {lon}`\n"
-                f"📊 *Composite Risk Score:* `{composite_index}/100`\n"
+                f"📊 *Composite Risk Index:* `{composite_index}/100`\n"
                 f"🌧 *72h Rain Accumulation:* `{rain_72h} mm`\n"
-                f"🌊 *Crest Window:* `{crest_hours} Hours`\n\n"
-                f"⚠️ *Directive:* {advisory}"
+                f"🌊 *Crest Time Window:* `{crest_hours} Hours`\n\n"
+                f"⚠️ *Advisory:* {advisory}"
             )
             background_tasks.add_task(send_telegram_notification, msg)
     elif composite_index >= 50:
         risk_level = "HIGH"
-        advisory = f"HIGH ADVISORY: Significant rainfall accumulation ({rain_72h} mm) and elevated discharge. Prepare evacuation kits."
+        advisory = f"HIGH ADVISORY: Significant precipitation ({rain_72h} mm) and elevated discharge. Prepare evacuation supplies."
         crest_hours = 12
     elif composite_index >= 30:
         risk_level = "MODERATE"
@@ -164,45 +209,45 @@ def get_flood_risk(lat: float = Query(27.18), lon: float = Query(78.02), backgro
         crest_hours = 22
     else:
         risk_level = "LOW"
-        advisory = f"NORMAL: Stable river flow recorded ({rain_72h} mm rain). Runoff capacity steady."
+        advisory = f"NORMAL: Stable river baseline ({rain_72h} mm rain). Channel capacity secure."
         crest_hours = 36
 
     peak_discharge = round(max(forecast_discharge), 1)
 
-    return {
-        "locationName": "Monitored Region",
-        "latitude": lat,
-        "longitude": lon,
-        "riskLevel": risk_level,
-        "compositeRiskScore": composite_index,
-        "advisoryMessage": advisory,
-        "hydrology": {
-            "riverDischargeM3s": peak_discharge,
-            "crestTimeHours": crest_hours
-        },
-        "weather": {
-            "projected72hRainfallMm": rain_72h,
-            "soilMoistureIndex": round(soil_saturation / 100.0, 2)
-        },
-        "forecast7Days": [
-            {"day": f"Day {i+1}", "dischargeM3s": d, "rainfallMm": 5.0}
+    return FloodRiskResponse(
+        locationName="Monitored Region",
+        latitude=lat,
+        longitude=lon,
+        riskLevel=risk_level,
+        compositeRiskScore=composite_index,
+        advisoryMessage=advisory,
+        hydrology=HydrologyMetric(
+            riverDischargeM3s=peak_discharge,
+            crestTimeHours=crest_hours
+        ),
+        weather=WeatherMetric(
+            projected72hRainfallMm=rain_72h,
+            soilMoistureIndex=soil_saturation
+        ),
+        forecast7Days=[
+            DailyForecast(day=f"Day {i+1}", dischargeM3s=d, rainfallMm=5.0)
             for i, d in enumerate(forecast_discharge)
         ]
-    }
+    )
 
-@app.post("/api/v1/trigger-sos")
+@app.post("/api/v1/trigger-sos", tags=["Alerts"])
 async def trigger_sos(sos: SOSPayload, background_tasks: BackgroundTasks):
     sos_msg = (
         f"🚨🚨 *EMERGENCY SOS DISTRESS SIGNAL* 🚨🚨\n\n"
         f"📍 *Location:* {sos.regionName}\n"
         f"🌐 *Coordinates:* `{sos.lat}, {sos.lon}`\n"
-        f"🆘 *Details:* {sos.details}\n"
+        f"🆘 *Situation:* {sos.details}\n"
         f"⏱ *Status:* Urgent civilian rescue response requested."
     )
     background_tasks.add_task(send_telegram_notification, sos_msg)
-    return {"status": "SOS broadcast sent to emergency channels"}
+    return {"status": "success", "message": "SOS broadcast sent to emergency channels"}
 
-@app.get("/api/v1/hazard-reports", response_model=List[HazardReport])
+@app.get("/api/v1/hazard-reports", response_model=List[HazardReport], tags=["Crowdsource"])
 def get_hazards():
     if supabase_client:
         try:
@@ -220,11 +265,11 @@ def get_hazards():
                     for row in res.data
                 ]
         except Exception as e:
-            print(f"Supabase select error: {e}")
+            print(f"ERROR:    Supabase select query failed: {e}")
             
     return fallback_hazards
 
-@app.post("/api/v1/hazard-reports", response_model=HazardReport)
+@app.post("/api/v1/hazard-reports", response_model=HazardReport, tags=["Crowdsource"])
 def add_hazard(report: HazardReport, background_tasks: BackgroundTasks):
     inserted_id = None
     inserted_ts = "Just now"
@@ -244,7 +289,7 @@ def add_hazard(report: HazardReport, background_tasks: BackgroundTasks):
                 inserted_id = created.get("id")
                 inserted_ts = created.get("timestamp", "Just now")
         except Exception as e:
-            print(f"Supabase insert error: {e}")
+            print(f"ERROR:    Supabase insert query failed: {e}")
 
     if not inserted_id:
         inserted_id = len(fallback_hazards) + 1
@@ -266,24 +311,26 @@ def add_hazard(report: HazardReport, background_tasks: BackgroundTasks):
 
     return report
 
-@app.post("/api/v1/simulate-flood-scenario")
+@app.post("/api/v1/simulate-flood-scenario", tags=["Simulation"])
 def simulate_flood(scenario: str = Query(..., description="Scenario type"), background_tasks: BackgroundTasks = None):
-    if scenario == "cloudburst":
+    scenario_clean = scenario.strip().lower()
+
+    if scenario_clean == "cloudburst":
         res = {
             "riskLevel": "HIGH",
             "compositeRiskScore": 74,
             "advisoryMessage": "SIMULATION ACTIVE: Sudden +65mm cloudburst triggered. Runoff surge imminent.",
             "hydrology": {"riverDischargeM3s": 580.4, "crestTimeHours": 6},
-            "weather": {"projected72hRainfallMm": 95.0, "soilMoistureIndex": 0.92},
+            "weather": {"projected72hRainfallMm": 95.0, "soilMoistureIndex": 92.0},
             "forecast7Days": [{"dischargeM3s": v} for v in [210, 580, 490, 310, 180, 110, 75]]
         }
-    elif scenario == "dam_release":
+    elif scenario_clean == "dam_release":
         res = {
             "riskLevel": "CATASTROPHIC",
             "compositeRiskScore": 89,
             "advisoryMessage": "SIMULATION ACTIVE: Upstream Dam Release (500m³/s). Valley inundation advisory.",
             "hydrology": {"riverDischargeM3s": 890.2, "crestTimeHours": 3},
-            "weather": {"projected72hRainfallMm": 45.0, "soilMoistureIndex": 0.88},
+            "weather": {"projected72hRainfallMm": 45.0, "soilMoistureIndex": 88.0},
             "forecast7Days": [{"dischargeM3s": v} for v in [320, 890, 740, 480, 220, 140, 90]]
         }
     else:
@@ -292,14 +339,16 @@ def simulate_flood(scenario: str = Query(..., description="Scenario type"), back
             "compositeRiskScore": 98,
             "advisoryMessage": "SIMULATION ACTIVE: CATASTROPHIC BASIN FLOOD. Immediate evacuation required!",
             "hydrology": {"riverDischargeM3s": 1420.0, "crestTimeHours": 1},
-            "weather": {"projected72hRainfallMm": 160.0, "soilMoistureIndex": 0.99},
+            "weather": {"projected72hRainfallMm": 160.0, "soilMoistureIndex": 99.0},
             "forecast7Days": [{"dischargeM3s": v} for v in [450, 1420, 1180, 790, 420, 210, 120]]
         }
 
-    if background_tasks and res["riskLevel"] == "CATASTROPHIC":
+    # Unconditional notification trigger across all 3 scenarios
+    if background_tasks:
         sim_alert = (
             f"🧪 *AQUASHIELD STRESS TEST DISPATCH*\n\n"
             f"Scenario: `{scenario.upper()}`\n"
+            f"Risk Level: `{res['riskLevel']}`\n"
             f"Peak River Discharge: `{res['hydrology']['riverDischargeM3s']} m³/s`\n"
             f"Advisory: {res['advisoryMessage']}"
         )
