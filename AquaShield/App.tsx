@@ -11,6 +11,7 @@ import {
   Platform,
   Vibration,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './src/supabaseClient';
 import { generateEvacuationBriefingPdf } from './src/pdfExporter';
 import { SUPPORTED_LANGUAGES, TRANSLATIONS, LanguageCode } from './src/i18n';
@@ -195,6 +196,8 @@ const InteractiveMap: React.FC<InteractiveMapProps> = ({
     }
   }, [lat, lon, discharge, hazards, shelters, selectedShelterId]);
 
+  if (Platform.OS !== 'web') return null;
+
   return (
     <div
       ref={mapContainerRef}
@@ -225,25 +228,44 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedShelterId, setSelectedShelterId] = useState<number | null>(1);
 
-  // Localization / Language State
+  // Localization / Language State with Safe Async Storage
   const [currentLang, setCurrentLang] = useState<LanguageCode>('en');
   const [langModalVisible, setLangModalVisible] = useState<boolean>(false);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const savedLang = localStorage.getItem('aquashield_lang') as LanguageCode;
-      if (savedLang && TRANSLATIONS[savedLang]) {
-        setCurrentLang(savedLang);
-      } else {
+    const loadSavedLanguage = async () => {
+      try {
+        let savedLang: string | null = null;
+        if (Platform.OS === 'web' && typeof window !== 'undefined' && window.localStorage) {
+          savedLang = window.localStorage.getItem('aquashield_lang');
+        } else {
+          savedLang = await AsyncStorage.getItem('aquashield_lang');
+        }
+
+        if (savedLang && TRANSLATIONS[savedLang as LanguageCode]) {
+          setCurrentLang(savedLang as LanguageCode);
+        } else {
+          setLangModalVisible(true);
+        }
+      } catch (err) {
+        console.warn('Could not read saved language:', err);
         setLangModalVisible(true);
       }
-    }
+    };
+
+    loadSavedLanguage();
   }, []);
 
-  const handleSelectLanguage = (code: LanguageCode) => {
+  const handleSelectLanguage = async (code: LanguageCode) => {
     setCurrentLang(code);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('aquashield_lang', code);
+    try {
+      if (Platform.OS === 'web' && typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem('aquashield_lang', code);
+      } else {
+        await AsyncStorage.setItem('aquashield_lang', code);
+      }
+    } catch (err) {
+      console.warn('Could not persist language:', err);
     }
     setLangModalVisible(false);
   };
@@ -252,14 +274,13 @@ export default function App() {
     return TRANSLATIONS[currentLang]?.[key] || TRANSLATIONS.en[key] || key;
   };
 
-  // Offline connection tracker
-  const [isOffline, setIsOffline] = useState<boolean>(
-    typeof navigator !== 'undefined' ? !navigator.onLine : false
-  );
+  // Safe offline connection tracker for Web
+  const [isOffline, setIsOffline] = useState<boolean>(false);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
 
+    setIsOffline(!navigator.onLine);
     const handleOnline = () => setIsOffline(false);
     const handleOffline = () => setIsOffline(true);
 
@@ -303,7 +324,6 @@ export default function App() {
     if (Platform.OS === 'web') {
       if (typeof window !== 'undefined' && 'navigator' in window && window.navigator.vibrate) {
         try {
-          // Sustained repeating vibration pulses (800ms pulse, 200ms gap)
           window.navigator.vibrate([800, 200, 800, 200, 800, 200, 800, 200, 800]);
         } catch (e) {
           console.warn('Web vibration policy restriction:', e);
@@ -318,13 +338,12 @@ export default function App() {
     }
 
     // 2. Continuous 5.0-Second Acoustic Siren Modulation
-    if (typeof window !== 'undefined') {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
       try {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (!AudioCtx) return;
         const ctx = new AudioCtx();
 
-        // Unlock immediate audio playback on mobile browsers
         if (ctx.state === 'suspended') {
           ctx.resume();
         }
@@ -335,16 +354,14 @@ export default function App() {
         osc.type = 'sawtooth';
 
         const startTime = ctx.currentTime;
-        const duration = 5.0; // 5 full seconds of alert duration
+        const duration = 5.0;
 
-        // Cyclic sweep between 450 Hz (deep horn) and 950 Hz (high alert)
         for (let offset = 0; offset < duration; offset += 0.6) {
           osc.frequency.setValueAtTime(450, startTime + offset);
           osc.frequency.linearRampToValueAtTime(950, startTime + offset + 0.3);
           osc.frequency.linearRampToValueAtTime(450, startTime + offset + 0.6);
         }
 
-        // Maintain full volume output, ramping down gracefully at cutoff
         gain.gain.setValueAtTime(0.9, startTime);
         gain.gain.setValueAtTime(0.9, startTime + duration - 0.4);
         gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
@@ -515,7 +532,11 @@ export default function App() {
   };
 
   const handleExportPdf = () => {
-    generateEvacuationBriefingPdf(regionName, coords, telemetry, shelters, hazards);
+    if (Platform.OS === 'web') {
+      generateEvacuationBriefingPdf(regionName, coords, telemetry, shelters, hazards);
+    } else {
+      alert('Evacuation Briefing PDF export is currently available via the web dashboard.');
+    }
   };
 
   const submitHazard = async () => {
@@ -675,7 +696,7 @@ export default function App() {
           />
         ) : (
           <View style={styles.mobileMapFallback}>
-            <Text style={styles.cardText}>Interactive Vector Layers Active</Text>
+            <Text style={styles.cardText}>Interactive Map Active for {regionName}</Text>
           </View>
         )}
       </View>
@@ -723,10 +744,10 @@ export default function App() {
             style={styles.evacuateBtn}
             onPress={() => {
               setSelectedShelterId(s.id);
-              if (Platform.OS === 'web') {
+              if (Platform.OS === 'web' && typeof window !== 'undefined') {
                 window.open(`https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}`, '_blank');
               } else {
-                alert(`Routing to ${s.name}...`);
+                alert(`Routing initiated to ${s.name}`);
               }
             }}
           >
@@ -894,8 +915,8 @@ const styles = StyleSheet.create({
   sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 10 },
   liveIndicatorDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#10b981' },
   mapCard: { backgroundColor: '#1e293b', borderRadius: 8, overflow: 'hidden', marginBottom: 16, borderWidth: 1, borderColor: '#334155' },
-  mobileMapFallback: { height: 200, justifyContent: 'center', alignItems: 'center' },
-  cardText: { color: '#94a3b8' },
+  mobileMapFallback: { height: 160, justifyContent: 'center', alignItems: 'center', padding: 16 },
+  cardText: { color: '#94a3b8', fontSize: 13 },
   chartCard: { backgroundColor: '#1e293b', padding: 16, borderRadius: 8, marginBottom: 16, borderWidth: 1, borderColor: '#334155' },
   barChartRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 130, paddingTop: 20 },
   barCol: { alignItems: 'center', flex: 1, height: '100%', justifyContent: 'flex-end' },
