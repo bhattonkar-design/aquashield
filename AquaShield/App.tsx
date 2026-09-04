@@ -60,7 +60,33 @@ export default function App() {
   const [hazardType, setHazardType] = useState('WATERLOGGED');
   const [hazardDesc, setHazardDesc] = useState('');
 
-  // Fallback dynamic hydrologic model based on coordinates
+  // PWA Service Worker Registration & Meta Injection
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      if (!document.querySelector('link[rel="manifest"]')) {
+        const link = document.createElement('link');
+        link.rel = 'manifest';
+        link.href = '/manifest.json';
+        document.head.appendChild(link);
+      }
+
+      if (!document.querySelector('meta[name="theme-color"]')) {
+        const meta = document.createElement('meta');
+        meta.name = 'theme-color';
+        meta.content = '#0b1329';
+        document.head.appendChild(meta);
+      }
+
+      window.addEventListener('load', () => {
+        navigator.serviceWorker
+          .register('/sw.js')
+          .then((reg) => console.log('AquaShield SW registered:', reg.scope))
+          .catch((err) => console.warn('SW registration failed:', err));
+      });
+    }
+  }, []);
+
+  // Dynamic fallback model based on coordinates
   const generateCoordinateModel = (lat: number, lon: number) => {
     const pseudoRain = Math.round(((Math.abs(Math.sin(lat) * Math.cos(lon)) * 70) + 10) * 10) / 10;
     const pseudoSoil = Math.round((Math.abs(Math.cos(lat)) * 50) + 40);
@@ -228,7 +254,6 @@ export default function App() {
     }
   };
 
-  // Harmonized telemetry readers
   const currentRisk = telemetry?.riskLevel || telemetry?.risk_level || 'HIGH';
   const currentScore = telemetry?.compositeRiskScore ?? telemetry?.composite_index ?? 68;
   const currentAdvisory =
