@@ -753,8 +753,15 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   title: { fontSize: 24, fontWeight: '900', color: '#f8fafc' },
   subtitle: { fontSize: 12, color: '#94a3b8', marginTop: 2 },
-  headerActions: { flexDirection: 'row', gap: 8 },
-  pdfBtn: { backgroundColor: '#334155', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: '#475569' },
+  headerActions: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+  pdfBtn: {
+    backgroundColor: '#334155',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#475569',
+  },
   sosBtn: { backgroundColor: '#ef4444', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8 },
   btnText: { color: '#ffffff', fontWeight: 'bold', fontSize: 13 },
   offlineBanner: {
