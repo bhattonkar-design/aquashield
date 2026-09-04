@@ -10,6 +10,7 @@ import {
   Modal,
   Platform,
 } from 'react-native';
+import { supabase } from './src/supabaseClient';
 
 const API_BASE = 'https://aquashield-s2p8.onrender.com/api/v1';
 
@@ -267,7 +268,6 @@ export default function App() {
   const [hazardDesc, setHazardDesc] = useState<string>('');
 
   const playSiren = () => {
-    // 1. Mobile Physical Vibration (Immediate synchronous invocation)
     if (typeof window !== 'undefined' && 'navigator' in window && window.navigator.vibrate) {
       try {
         window.navigator.vibrate([400, 150, 400, 150, 600]);
@@ -276,7 +276,6 @@ export default function App() {
       }
     }
 
-    // 2. Audible Siren (Synchronous audio context construction on user gesture)
     if (typeof window !== 'undefined') {
       try {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
@@ -293,14 +292,12 @@ export default function App() {
         osc.type = 'sawtooth';
         const start = ctx.currentTime;
 
-        // Emergency warble profile
         osc.frequency.setValueAtTime(500, start);
         osc.frequency.linearRampToValueAtTime(950, start + 0.25);
         osc.frequency.linearRampToValueAtTime(500, start + 0.5);
         osc.frequency.linearRampToValueAtTime(950, start + 0.75);
         osc.frequency.linearRampToValueAtTime(500, start + 1.0);
 
-        // Volume Envelope
         gain.gain.setValueAtTime(0.7, start);
         gain.gain.exponentialRampToValueAtTime(0.01, start + 1.1);
 
@@ -350,9 +347,31 @@ export default function App() {
     }
   };
 
+  // Real-time Supabase Table Subscription
   useEffect(() => {
     fetchTelemetry(coords.lat, coords.lon);
     fetchHazards();
+
+    // Subscribe directly to live PostgreSQL INSERT events on the hazards table
+    const channel = supabase
+      .channel('hazards-realtime')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'hazards' },
+        (payload) => {
+          const newRow = payload.new as Hazard;
+          setHazards((currentHazards) => {
+            // Avoid duplicate additions
+            if (currentHazards.some((h) => h.id === newRow.id)) return currentHazards;
+            return [newRow, ...currentHazards];
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [coords]);
 
   const handleSearchChange = (text: string) => {
@@ -460,7 +479,6 @@ export default function App() {
       lon: coords.lon,
     };
 
-    setHazards([newReport, ...hazards]);
     setModalVisible(false);
     setHazardDesc('');
 
@@ -470,9 +488,10 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newReport),
       });
-      fetchHazards();
+      // The real-time subscription will catch the Postgres insert and update the state automatically across all clients
     } catch (e) {
       console.warn('Hazard POST failed; stored locally', e);
+      setHazards((prev) => [newReport, ...prev]);
     }
   };
 
@@ -666,7 +685,10 @@ export default function App() {
 
       {/* Crowdsourced Hazards */}
       <View style={styles.sectionHeaderRow}>
-        <Text style={styles.sectionHeader}>Crowdsourced Inundation Feed</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Text style={styles.sectionHeader}>Crowdsourced Inundation Feed</Text>
+          <View style={styles.liveIndicatorDot} />
+        </View>
         <TouchableOpacity style={styles.addBtn} onPress={() => setModalVisible(true)}>
           <Text style={styles.btnText}>+ Report Hazard</Text>
         </TouchableOpacity>
@@ -765,6 +787,7 @@ const styles = StyleSheet.create({
   metricLbl: { color: '#94a3b8', fontSize: 11, marginTop: 2 },
   sectionHeader: { fontSize: 16, fontWeight: 'bold', color: '#f8fafc', marginVertical: 10 },
   sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 10 },
+  liveIndicatorDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#10b981' },
   mapCard: { backgroundColor: '#1e293b', borderRadius: 8, overflow: 'hidden', marginBottom: 16, borderWidth: 1, borderColor: '#334155' },
   mobileMapFallback: { height: 200, justifyContent: 'center', alignItems: 'center' },
   cardText: { color: '#94a3b8' },
