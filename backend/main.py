@@ -10,8 +10,8 @@ from supabase import create_client, Client
 
 app = FastAPI(
     title="AquaShield Hydrological Telemetry & Dispatch API",
-    version="2.2.0",
-    description="Real-time river discharge forecasting, Supabase disaster persistence, and automated Telegram dispatch webhooks."
+    version="2.3.0",
+    description="Real-time river discharge forecasting, Supabase disaster persistence, dynamic GeoJSON contour generation, and automated Telegram dispatch webhooks."
 )
 
 app.add_middleware(
@@ -137,7 +137,7 @@ def fetch_open_meteo(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     try:
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "AquaShield/2.2 (Disaster-Response-Telemetry)"}
+            headers={"User-Agent": "AquaShield/2.3 (Disaster-Response-Telemetry)"}
         )
         with urllib.request.urlopen(req, timeout=4) as response:
             return json.loads(response.read().decode())
@@ -155,7 +155,7 @@ def read_root():
         "service": "AquaShield Early Warning Hydrological Engine",
         "database_backend": "Supabase PostgreSQL Active" if supabase_client else "In-Memory Fallback",
         "telegram_integration": "Enabled" if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID else "Disabled / Incomplete",
-        "version": "2.2.0"
+        "version": "2.3.0"
     }
 
 @app.get("/api/v1/flood-risk", response_model=FloodRiskResponse, tags=["Telemetry"])
@@ -234,6 +234,91 @@ def get_flood_risk(lat: float = Query(27.18), lon: float = Query(78.02), backgro
             for i, d in enumerate(forecast_discharge)
         ]
     )
+
+@app.get("/api/v1/inundation-zones", tags=["Mapping"])
+def get_inundation_zones(
+    lat: float = Query(27.18),
+    lon: float = Query(78.02),
+    discharge: float = Query(90.0)
+):
+    # Scale contour polygon buffer offsets proportionally to discharge rate (m³/s)
+    scale_factor = max(0.006, min(0.045, (discharge / 1500.0) * 0.045))
+
+    geojson = {
+        "type": "FeatureCollection",
+        "features": [
+            # Zone 3: 100-year / Catastrophic Buffer (Red)
+            {
+                "type": "Feature",
+                "properties": {
+                    "zone": "EXTREME",
+                    "label": "Catastrophic Inundation Contour (100-Yr Basin Spill)",
+                    "depthEstimate": "> 2.5m",
+                    "fillColor": "#ef4444",
+                    "fillOpacity": 0.45,
+                    "strokeColor": "#b91c1c"
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [lon - (scale_factor * 1.5), lat - (scale_factor * 0.9)],
+                        [lon + (scale_factor * 0.4), lat - (scale_factor * 1.2)],
+                        [lon + (scale_factor * 1.6), lat - (scale_factor * 0.3)],
+                        [lon + (scale_factor * 1.2), lat + (scale_factor * 1.1)],
+                        [lon - (scale_factor * 0.5), lat + (scale_factor * 1.4)],
+                        [lon - (scale_factor * 1.6), lat + (scale_factor * 0.2)],
+                        [lon - (scale_factor * 1.5), lat - (scale_factor * 0.9)]
+                    ]]
+                }
+            },
+            # Zone 2: 25-year / High Water Overflow (Orange)
+            {
+                "type": "Feature",
+                "properties": {
+                    "zone": "HIGH",
+                    "label": "High Spillway Reach (25-Yr Embankment Spill)",
+                    "depthEstimate": "1.2m - 2.5m",
+                    "fillColor": "#f97316",
+                    "fillOpacity": 0.55,
+                    "strokeColor": "#c2410c"
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [lon - scale_factor, lat - (scale_factor * 0.6)],
+                        [lon + (scale_factor * 0.3), lat - (scale_factor * 0.8)],
+                        [lon + scale_factor, lat - (scale_factor * 0.2)],
+                        [lon + (scale_factor * 0.8), lat + (scale_factor * 0.7)],
+                        [lon - (scale_factor * 0.3), lat + (scale_factor * 0.9)],
+                        [lon - scale_factor, lat - (scale_factor * 0.6)]
+                    ]]
+                }
+            },
+            # Zone 1: Active River Corridor Baseline (Blue)
+            {
+                "type": "Feature",
+                "properties": {
+                    "zone": "ACTIVE_FLOW",
+                    "label": "Active Riverbed & Riparian Buffer",
+                    "depthEstimate": "Primary Channel Runoff",
+                    "fillColor": "#0284c7",
+                    "fillOpacity": 0.65,
+                    "strokeColor": "#0369a1"
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [lon - (scale_factor * 0.5), lat - (scale_factor * 0.3)],
+                        [lon + (scale_factor * 0.2), lat - (scale_factor * 0.4)],
+                        [lon + (scale_factor * 0.5), lat + (scale_factor * 0.1)],
+                        [lon - (scale_factor * 0.1), lat + (scale_factor * 0.4)],
+                        [lon - (scale_factor * 0.5), lat - (scale_factor * 0.3)]
+                    ]]
+                }
+            }
+        ]
+    }
+    return geojson
 
 @app.post("/api/v1/trigger-sos", tags=["Alerts"])
 async def trigger_sos(sos: SOSPayload, background_tasks: BackgroundTasks):
