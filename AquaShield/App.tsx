@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   ScrollView,
   Modal,
-  Alert,
   Platform
 } from 'react-native';
 
@@ -15,15 +14,14 @@ const API_BASE = process.env.EXPO_PUBLIC_API_URL || 'https://aquashield-s2p8.onr
 
 export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [regionName, setRegionName] = useState('Agra, Monitored Region, India');
-  const [coords, setCoords] = useState({ lat: 27.18, lon: 78.02 });
+  const [regionName, setRegionName] = useState('Rishikesh, Dehradun, India');
+  const [coords, setCoords] = useState({ lat: 30.11, lon: 78.29 });
   const [telemetry, setTelemetry] = useState<any>(null);
   const [hazards, setHazards] = useState<any[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [hazardType, setHazardType] = useState('WATERLOGGED');
   const [hazardDesc, setHazardDesc] = useState('');
 
-  // Fetch telemetry dynamically whenever coordinates change
   const fetchRiskData = async (lat: number, lon: number) => {
     try {
       const res = await fetch(`${API_BASE}/flood-risk?lat=${lat}&lon=${lon}`);
@@ -49,14 +47,11 @@ export default function App() {
     fetchHazards();
   }, [coords]);
 
-  // Geocoding handler for search bar
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     try {
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-          searchQuery
-        )}`
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}`
       );
       const results = await res.json();
       if (results && results.length > 0) {
@@ -108,16 +103,28 @@ export default function App() {
     }
   };
 
+  // Harmonize camelCase and snake_case properties
+  const currentRisk = telemetry?.riskLevel || telemetry?.risk_level || 'MONITORING';
+  const currentScore = telemetry?.compositeRiskScore ?? telemetry?.composite_index ?? '--';
+  const currentAdvisory = telemetry?.advisoryMessage || telemetry?.advisory || 'Synchronizing hydrological sensor models...';
+
+  const peakDischarge = telemetry?.hydrology?.riverDischargeM3s ?? telemetry?.metrics?.peak_discharge ?? '--';
+  const crestHours = telemetry?.hydrology?.crestTimeHours ?? telemetry?.metrics?.crest_surge_hours ?? '--';
+  const rainAccum = telemetry?.weather?.projected72hRainfallMm ?? telemetry?.metrics?.rain_accumulation_72h ?? '--';
+  
+  // Format soil moisture as percentage if decimal (0.45 -> 45%)
+  const rawMoisture = telemetry?.weather?.soilMoistureIndex ?? telemetry?.metrics?.soil_moisture;
+  const soilMoisture = rawMoisture !== undefined ? (rawMoisture <= 1 ? Math.round(rawMoisture * 100) : rawMoisture) : '--';
+
   const riskColor =
-    telemetry?.risk_level === 'CATASTROPHIC'
+    currentRisk === 'CATASTROPHIC'
       ? '#ef4444'
-      : telemetry?.risk_level === 'HIGH'
+      : currentRisk === 'HIGH'
       ? '#f97316'
-      : telemetry?.risk_level === 'MODERATE'
+      : currentRisk === 'MODERATE'
       ? '#eab308'
       : '#22c55e';
 
-  // Embed dynamic OSM radar bounding box based on current coordinates
   const mapUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${coords.lon - 0.1}%2C${
     coords.lat - 0.1
   }%2C${coords.lon + 0.1}%2C${coords.lat + 0.1}&layer=mapnik&marker=${coords.lat}%2C${coords.lon}`;
@@ -129,7 +136,7 @@ export default function App() {
         <View style={{ flex: 1 }}>
           <Text style={styles.regionText}>{regionName}</Text>
           <Text style={[styles.riskBadge, { color: riskColor }]}>
-            {telemetry?.risk_level || 'LOADING'} ({telemetry?.composite_index ?? '--'}% COMPOSITE INDEX)
+            {currentRisk} ({currentScore}% COMPOSITE INDEX)
           </Text>
         </View>
         <View style={styles.headerButtons}>
@@ -165,9 +172,7 @@ export default function App() {
 
       {/* Advisory Banner */}
       <View style={[styles.advisoryBanner, { backgroundColor: riskColor }]}>
-        <Text style={styles.advisoryText}>
-          {telemetry?.advisory || 'Synchronizing hydrological sensor models...'}
-        </Text>
+        <Text style={styles.advisoryText}>{currentAdvisory}</Text>
       </View>
 
       {/* Stress-Test Simulator Panel */}
@@ -204,7 +209,7 @@ export default function App() {
             style={{ width: '100%', height: 260, border: 'none', borderRadius: 8 }}
           />
         ) : (
-          <View style={[styles.mapFallback]}>
+          <View style={styles.mapFallback}>
             <Text style={{ color: '#fff' }}>Interactive Radar Active ({coords.lat.toFixed(2)}, {coords.lon.toFixed(2)})</Text>
           </View>
         )}
@@ -217,19 +222,19 @@ export default function App() {
       <View style={styles.metricsGrid}>
         <View style={styles.metricCard}>
           <Text style={styles.metricLabel}>Peak Discharge</Text>
-          <Text style={styles.metricVal}>{telemetry?.metrics?.peak_discharge ?? '--'} m³/s</Text>
+          <Text style={styles.metricVal}>{peakDischarge} m³/s</Text>
         </View>
         <View style={styles.metricCard}>
           <Text style={styles.metricLabel}>Crest Surge In</Text>
-          <Text style={styles.metricVal}>{telemetry?.metrics?.crest_surge_hours ?? '--'} Hours</Text>
+          <Text style={styles.metricVal}>{crestHours} Hours</Text>
         </View>
         <View style={styles.metricCard}>
           <Text style={styles.metricLabel}>72h Rain Accumulation</Text>
-          <Text style={styles.metricVal}>{telemetry?.metrics?.rain_accumulation_72h ?? '--'} mm</Text>
+          <Text style={styles.metricVal}>{rainAccum} mm</Text>
         </View>
         <View style={styles.metricCard}>
           <Text style={styles.metricLabel}>Soil Moisture</Text>
-          <Text style={styles.metricVal}>{telemetry?.metrics?.soil_moisture ?? '--'} %</Text>
+          <Text style={styles.metricVal}>{soilMoisture} %</Text>
         </View>
       </View>
 
