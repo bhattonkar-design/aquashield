@@ -66,7 +66,7 @@ export default function App() {
   const [hazards, setHazards] = useState<Hazard[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
-  // Shelters
+  // Designated Shelters
   const shelters: Shelter[] = [
     {
       id: 1,
@@ -91,12 +91,28 @@ export default function App() {
   const [hazardType, setHazardType] = useState<string>('WATERLOGGED');
   const [hazardDesc, setHazardDesc] = useState<string>('');
 
-  const playSiren = () => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+  const playSiren = async () => {
+    // 1. Trigger phone emergency vibration (works on mobile browsers/PWA)
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
       try {
-        const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-        if (!AudioContext) return;
-        const ctx = new AudioContext();
+        navigator.vibrate([300, 100, 300, 100, 500, 100, 500]);
+      } catch (e) {
+        console.warn('Vibration not permitted:', e);
+      }
+    }
+
+    // 2. Play audible siren with mobile AudioContext unlock
+    if (typeof window !== 'undefined') {
+      try {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioContextClass) return;
+        const ctx = new AudioContextClass();
+
+        // Critical for mobile browsers: resume audio context if suspended
+        if (ctx.state === 'suspended') {
+          await ctx.resume();
+        }
+
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
 
@@ -108,13 +124,13 @@ export default function App() {
         osc.frequency.linearRampToValueAtTime(880, now + 0.9);
         osc.frequency.linearRampToValueAtTime(440, now + 1.2);
 
-        gain.gain.setValueAtTime(0.3, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 1.2);
+        gain.gain.setValueAtTime(0.5, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 1.3);
 
         osc.connect(gain);
         gain.connect(ctx.destination);
         osc.start(now);
-        osc.stop(now + 1.2);
+        osc.stop(now + 1.3);
       } catch (e) {
         console.warn('Audio synthesis failed:', e);
       }
@@ -248,8 +264,8 @@ export default function App() {
           lat: coords.lat,
           lon: coords.lon,
           regionName: regionName,
-          details: 'Urgent rescue response needed at coordinates'
-        })
+          details: 'Urgent rescue response needed at coordinates',
+        }),
       });
     } catch (e) {
       console.warn('SOS trigger failed', e);
@@ -312,7 +328,7 @@ export default function App() {
         </View>
       </View>
 
-      {/* Geocoding Search */}
+      {/* Geocoding Search Bar */}
       <View style={styles.searchContainer}>
         <TextInput
           style={styles.searchInput}
@@ -340,14 +356,14 @@ export default function App() {
         )}
       </View>
 
-      {/* Region Banner */}
+      {/* Active Monitored Coordinates */}
       <View style={styles.regionBanner}>
         <Text style={styles.regionText}>
           📍 Monitored Region: <Text style={styles.regionHighlight}>{regionName}</Text> ({coords.lat.toFixed(2)}, {coords.lon.toFixed(2)})
         </Text>
       </View>
 
-      {/* Telemetry Card */}
+      {/* Telemetry Composite Index */}
       {loading ? (
         <ActivityIndicator size="large" color="#38bdf8" style={{ marginVertical: 30 }} />
       ) : (
@@ -383,7 +399,7 @@ export default function App() {
         )
       )}
 
-      {/* Map */}
+      {/* Live Radar Map */}
       <Text style={styles.sectionHeader}>Live Radar & Inundation Map</Text>
       <View style={styles.mapCard}>
         {Platform.OS === 'web' ? (
@@ -399,7 +415,7 @@ export default function App() {
         )}
       </View>
 
-      {/* 7-Day Forecast Chart */}
+      {/* 7-Day Hydrological Forecast */}
       <Text style={styles.sectionHeader}>7-Day River Discharge Forecast (m³/s)</Text>
       <View style={styles.chartCard}>
         <View style={styles.barChartRow}>
@@ -416,7 +432,7 @@ export default function App() {
         </View>
       </View>
 
-      {/* Stress-Test Engine */}
+      {/* Stress-Test Simulations */}
       <Text style={styles.sectionHeader}>Scenario Stress-Test Engine</Text>
       <View style={styles.simButtonsRow}>
         <TouchableOpacity style={styles.simBtn} onPress={() => runSimulation('cloudburst')}>
@@ -453,7 +469,7 @@ export default function App() {
         </View>
       ))}
 
-      {/* Crowdsourced Inundation Feed */}
+      {/* Crowdsourced Hazards */}
       <View style={styles.sectionHeaderRow}>
         <Text style={styles.sectionHeader}>Crowdsourced Inundation Feed</Text>
         <TouchableOpacity style={styles.addBtn} onPress={() => setModalVisible(true)}>
@@ -469,7 +485,7 @@ export default function App() {
         </View>
       ))}
 
-      {/* Hazard Report Modal */}
+      {/* Submission Modal */}
       <Modal visible={modalVisible} transparent animationType="slide">
         <View style={styles.modalBackdrop}>
           <View style={styles.modalContent}>
