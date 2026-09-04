@@ -11,6 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { supabase } from './src/supabaseClient';
+import { generateEvacuationBriefingPdf } from './src/pdfExporter';
 
 const API_BASE = 'https://aquashield-s2p8.onrender.com/api/v1';
 
@@ -352,7 +353,6 @@ export default function App() {
     fetchTelemetry(coords.lat, coords.lon);
     fetchHazards();
 
-    // Subscribe directly to live PostgreSQL INSERT events on the hazards table
     const channel = supabase
       .channel('hazards-realtime')
       .on(
@@ -361,7 +361,6 @@ export default function App() {
         (payload) => {
           const newRow = payload.new as Hazard;
           setHazards((currentHazards) => {
-            // Avoid duplicate additions
             if (currentHazards.some((h) => h.id === newRow.id)) return currentHazards;
             return [newRow, ...currentHazards];
           });
@@ -469,6 +468,10 @@ export default function App() {
     }
   };
 
+  const handleExportPdf = () => {
+    generateEvacuationBriefingPdf(regionName, coords, telemetry, shelters, hazards);
+  };
+
   const submitHazard = async () => {
     if (!hazardDesc.trim()) return;
     const newReport: Hazard = {
@@ -488,7 +491,6 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newReport),
       });
-      // The real-time subscription will catch the Postgres insert and update the state automatically across all clients
     } catch (e) {
       console.warn('Hazard POST failed; stored locally', e);
       setHazards((prev) => [newReport, ...prev]);
@@ -517,6 +519,9 @@ export default function App() {
           <Text style={styles.subtitle}>Hydrological Inundation Early Warning System</Text>
         </View>
         <View style={styles.headerActions}>
+          <TouchableOpacity style={styles.pdfBtn} onPress={handleExportPdf}>
+            <Text style={styles.btnText}>📄 Export PDF</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.sosBtn} onPress={triggerSOS}>
             <Text style={styles.btnText}>🚨 SOS</Text>
           </TouchableOpacity>
@@ -749,6 +754,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, fontWeight: '900', color: '#f8fafc' },
   subtitle: { fontSize: 12, color: '#94a3b8', marginTop: 2 },
   headerActions: { flexDirection: 'row', gap: 8 },
+  pdfBtn: { backgroundColor: '#334155', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: '#475569' },
   sosBtn: { backgroundColor: '#ef4444', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8 },
   btnText: { color: '#ffffff', fontWeight: 'bold', fontSize: 13 },
   offlineBanner: {
