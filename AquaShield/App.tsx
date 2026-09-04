@@ -52,6 +52,159 @@ interface Shelter {
   lon: number;
 }
 
+interface InteractiveMapProps {
+  lat: number;
+  lon: number;
+  discharge: number;
+  hazards: Hazard[];
+  shelters: Shelter[];
+  selectedShelterId: number | null;
+}
+
+const InteractiveMap: React.FC<InteractiveMapProps> = ({
+  lat,
+  lon,
+  discharge,
+  hazards,
+  shelters,
+  selectedShelterId,
+}) => {
+  const mapContainerRef = useRef<any>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const layersRef = useRef<{ geojson?: any; markers?: any[]; route?: any }>({ markers: [] });
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const L = (window as any).L;
+    if (!L || !mapContainerRef.current) return;
+
+    if (!mapInstanceRef.current) {
+      const map = L.map(mapContainerRef.current, {
+        zoomControl: false,
+        attributionControl: false,
+      }).setView([lat, lon], 13);
+
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        maxZoom: 19,
+      }).addTo(map);
+
+      L.control.zoom({ position: 'bottomright' }).addTo(map);
+      mapInstanceRef.current = map;
+    } else {
+      mapInstanceRef.current.setView([lat, lon], 13);
+    }
+
+    const map = mapInstanceRef.current;
+
+    // Clear prior vector layers and markers
+    if (layersRef.current.geojson) map.removeLayer(layersRef.current.geojson);
+    if (layersRef.current.route) map.removeLayer(layersRef.current.route);
+    if (layersRef.current.markers) {
+      layersRef.current.markers.forEach((m: any) => map.removeLayer(m));
+      layersRef.current.markers = [];
+    }
+
+    // 1. Fetch & draw scaled GeoJSON inundation contours
+    fetch(`${API_BASE}/inundation-zones?lat=${lat}&lon=${lon}&discharge=${discharge}`)
+      .then((r) => r.json())
+      .then((geoData) => {
+        if (!mapInstanceRef.current) return;
+        const layer = L.geoJSON(geoData, {
+          style: (feature: any) => ({
+            fillColor: feature.properties.fillColor,
+            fillOpacity: feature.properties.fillOpacity,
+            color: feature.properties.strokeColor,
+            weight: 2,
+            dashArray: feature.properties.zone === 'EXTREME' ? '4, 4' : undefined,
+          }),
+          onEachFeature: (feature: any, layerItem: any) => {
+            layerItem.bindPopup(
+              `<strong>${feature.properties.label}</strong><br/>Estimated Inundation Depth: <b>${feature.properties.depthEstimate}</b>`
+            );
+          },
+        }).addTo(map);
+        layersRef.current.geojson = layer;
+      })
+      .catch((e) => console.warn('GeoJSON vector layer failed:', e));
+
+    // 2. Add Center Monitored Point Marker
+    const userMarker = L.circleMarker([lat, lon], {
+      radius: 9,
+      color: '#38bdf8',
+      fillColor: '#0284c7',
+      fillOpacity: 1,
+      weight: 3,
+    })
+      .addTo(map)
+      .bindPopup('<b>Current Monitoring Station Coordinates</b>');
+    layersRef.current.markers.push(userMarker);
+
+    // 3. Add Safe Evacuation Shelters
+    shelters.forEach((s) => {
+      const isTarget = selectedShelterId === s.id;
+      const shelterMarker = L.circleMarker([s.lat, s.lon], {
+        radius: isTarget ? 10 : 7,
+        color: '#10b981',
+        fillColor: isTarget ? '#34d399' : '#059669',
+        fillOpacity: 0.9,
+        weight: isTarget ? 3 : 2,
+      })
+        .addTo(map)
+        .bindPopup(`<b>${s.name}</b><br/>Capacity: ${s.capacitySlots} slots<br/>Distance: ${s.distanceKm} km`);
+      layersRef.current.markers.push(shelterMarker);
+    });
+
+    // 4. Add Hazard Feed Points
+    hazards.forEach((h) => {
+      if (h.lat && h.lon) {
+        const hazardMarker = L.circleMarker([h.lat, h.lon], {
+          radius: 7,
+          color: '#ef4444',
+          fillColor: '#f97316',
+          fillOpacity: 0.9,
+          weight: 2,
+        })
+          .addTo(map)
+          .bindPopup(`<b>⚠️ ${h.type}</b><br/>${h.description}`);
+        layersRef.current.markers.push(hazardMarker);
+      }
+    });
+
+    // 5. Draw Evacuation Route Line to selected shelter
+    const targetShelter = shelters.find((s) => s.id === selectedShelterId) || shelters[0];
+    if (targetShelter) {
+      const routeLine = L.polyline(
+        [
+          [lat, lon],
+          [lat + (targetShelter.lat - lat) * 0.45 + 0.003, lon + (targetShelter.lon - lon) * 0.35 - 0.002],
+          [targetShelter.lat, targetShelter.lon],
+        ],
+        {
+          color: '#10b981',
+          weight: 4,
+          opacity: 0.85,
+          dashArray: '8, 8',
+        }
+      ).addTo(map);
+      layersRef.current.route = routeLine;
+    }
+  }, [lat, lon, discharge, hazards, shelters, selectedShelterId]);
+
+  return (
+    <div
+      ref={mapContainerRef}
+      style={{
+        width: '100%',
+        height: '320px',
+        borderRadius: '8px',
+        overflow: 'hidden',
+        position: 'relative',
+        zIndex: 1,
+      }}
+    />
+  );
+};
+
 export default function App() {
   const [coords, setCoords] = useState<{ lat: number; lon: number }>({ lat: 27.18, lon: 78.02 });
   const [regionName, setRegionName] = useState<string>('Agra Basin, UP');
@@ -65,8 +218,9 @@ export default function App() {
   const [forecastBars, setForecastBars] = useState<number[]>([90, 85, 80, 75, 70, 65, 60]);
   const [hazards, setHazards] = useState<Hazard[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [selectedShelterId, setSelectedShelterId] = useState<number | null>(1);
 
-  // Designated Shelters
+  // Shelters
   const shelters: Shelter[] = [
     {
       id: 1,
@@ -317,8 +471,6 @@ export default function App() {
     }
   };
 
-  const mapEmbedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${coords.lon - 0.08}%2C${coords.lat - 0.05}%2C${coords.lon + 0.08}%2C${coords.lat + 0.05}&layer=mapnik&marker=${coords.lat}%2C${coords.lon}`;
-
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
       {/* Header */}
@@ -405,18 +557,27 @@ export default function App() {
         )
       )}
 
-      {/* Live Radar Map */}
-      <Text style={styles.sectionHeader}>Live Radar & Inundation Map</Text>
+      {/* Dynamic GeoJSON Vector Map */}
+      <View style={styles.sectionHeaderRow}>
+        <Text style={styles.sectionHeader}>Dynamic Inundation & Escape Vector Map</Text>
+        <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: 'bold' }}>
+          Contours: {telemetry ? `${telemetry.hydrology.riverDischargeM3s} m³/s` : '90 m³/s'}
+        </Text>
+      </View>
+
       <View style={styles.mapCard}>
         {Platform.OS === 'web' ? (
-          <iframe
-            title="Radar Inundation Map"
-            src={mapEmbedUrl}
-            style={{ width: '100%', height: 260, border: 'none', borderRadius: 8 }}
+          <InteractiveMap
+            lat={coords.lat}
+            lon={coords.lon}
+            discharge={telemetry?.hydrology.riverDischargeM3s || 90}
+            hazards={hazards}
+            shelters={shelters}
+            selectedShelterId={selectedShelterId}
           />
         ) : (
           <View style={styles.mobileMapFallback}>
-            <Text style={styles.cardText}>Interactive Map Active at ({coords.lat.toFixed(2)}, {coords.lon.toFixed(2)})</Text>
+            <Text style={styles.cardText}>Interactive Vector Layers Active</Text>
           </View>
         )}
       </View>
@@ -463,6 +624,7 @@ export default function App() {
           <TouchableOpacity
             style={styles.evacuateBtn}
             onPress={() => {
+              setSelectedShelterId(s.id);
               if (Platform.OS === 'web') {
                 window.open(`https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}`, '_blank');
               } else {
