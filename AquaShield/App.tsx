@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { supabase } from './src/supabaseClient';
 import { generateEvacuationBriefingPdf } from './src/pdfExporter';
+import { SUPPORTED_LANGUAGES, TRANSLATIONS, LanguageCode } from './src/i18n';
 
 const API_BASE = 'https://aquashield-s2p8.onrender.com/api/v1';
 
@@ -223,6 +224,34 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedShelterId, setSelectedShelterId] = useState<number | null>(1);
 
+  // Localization / Language State
+  const [currentLang, setCurrentLang] = useState<LanguageCode>('en');
+  const [langModalVisible, setLangModalVisible] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedLang = localStorage.getItem('aquashield_lang') as LanguageCode;
+      if (savedLang && TRANSLATIONS[savedLang]) {
+        setCurrentLang(savedLang);
+      } else {
+        // First-time user: display language selection permission modal
+        setLangModalVisible(true);
+      }
+    }
+  }, []);
+
+  const handleSelectLanguage = (code: LanguageCode) => {
+    setCurrentLang(code);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('aquashield_lang', code);
+    }
+    setLangModalVisible(false);
+  };
+
+  const t = (key: string): string => {
+    return TRANSLATIONS[currentLang]?.[key] || TRANSLATIONS.en[key] || key;
+  };
+
   // Offline connection tracker
   const [isOffline, setIsOffline] = useState<boolean>(
     typeof navigator !== 'undefined' ? !navigator.onLine : false
@@ -348,7 +377,6 @@ export default function App() {
     }
   };
 
-  // Real-time Supabase Table Subscription
   useEffect(() => {
     fetchTelemetry(coords.lat, coords.lon);
     fetchHazards();
@@ -514,16 +542,19 @@ export default function App() {
     <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
       {/* Header */}
       <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>AquaShield AI</Text>
-          <Text style={styles.subtitle}>Hydrological Inundation Early Warning System</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>{t('appTitle')}</Text>
+          <Text style={styles.subtitle}>{t('subtitle')}</Text>
         </View>
         <View style={styles.headerActions}>
+          <TouchableOpacity style={styles.langBtn} onPress={() => setLangModalVisible(true)}>
+            <Text style={styles.btnText}>{t('changeLang')}</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.pdfBtn} onPress={handleExportPdf}>
-            <Text style={styles.btnText}>📄 Export PDF</Text>
+            <Text style={styles.btnText}>{t('exportPdf')}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.sosBtn} onPress={triggerSOS}>
-            <Text style={styles.btnText}>🚨 SOS</Text>
+            <Text style={styles.btnText}>{t('sos')}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -531,9 +562,7 @@ export default function App() {
       {/* Real-Time Offline Grid-Down Alert Banner */}
       {isOffline && (
         <View style={styles.offlineBanner}>
-          <Text style={styles.offlineBannerText}>
-            ⚡ GRID-DOWN OFFLINE MODE: Serving local cached telemetry and offline vector basemaps.
-          </Text>
+          <Text style={styles.offlineBannerText}>{t('offlineBanner')}</Text>
         </View>
       )}
 
@@ -541,7 +570,7 @@ export default function App() {
       <View style={styles.searchContainer}>
         <TextInput
           style={styles.searchInput}
-          placeholder="Search city, basin, or river (e.g., Patna, Guwahati)..."
+          placeholder={t('searchPlaceholder')}
           placeholderTextColor="#94a3b8"
           value={searchQuery}
           onChangeText={handleSearchChange}
@@ -568,7 +597,7 @@ export default function App() {
       {/* Active Monitored Coordinates */}
       <View style={styles.regionBanner}>
         <Text style={styles.regionText}>
-          📍 Monitored Region: <Text style={styles.regionHighlight}>{regionName}</Text> ({coords.lat.toFixed(2)}, {coords.lon.toFixed(2)})
+          📍 {t('monitoredRegion')}: <Text style={styles.regionHighlight}>{regionName}</Text> ({coords.lat.toFixed(2)}, {coords.lon.toFixed(2)})
         </Text>
       </View>
 
@@ -582,26 +611,26 @@ export default function App() {
               <View style={[styles.badge, { backgroundColor: getRiskColor(telemetry.riskLevel) }]}>
                 <Text style={styles.badgeText}>{telemetry.riskLevel} RISK</Text>
               </View>
-              <Text style={styles.riskScore}>Index: {telemetry.compositeRiskScore}/100</Text>
+              <Text style={styles.riskScore}>{t('riskIndex')}: {telemetry.compositeRiskScore}/100</Text>
             </View>
             <Text style={styles.advisory}>{telemetry.advisoryMessage}</Text>
 
             <View style={styles.metricsGrid}>
               <View style={styles.metricBox}>
                 <Text style={styles.metricVal}>{telemetry.hydrology.riverDischargeM3s} m³/s</Text>
-                <Text style={styles.metricLbl}>Peak Discharge</Text>
+                <Text style={styles.metricLbl}>{t('peakDischarge')}</Text>
               </View>
               <View style={styles.metricBox}>
-                <Text style={styles.metricVal}>{telemetry.hydrology.crestTimeHours} Hours</Text>
-                <Text style={styles.metricLbl}>Crest Arrival</Text>
+                <Text style={styles.metricVal}>{telemetry.hydrology.crestTimeHours} {t('hours')}</Text>
+                <Text style={styles.metricLbl}>{t('crestArrival')}</Text>
               </View>
               <View style={styles.metricBox}>
                 <Text style={styles.metricVal}>{telemetry.weather.projected72hRainfallMm} mm</Text>
-                <Text style={styles.metricLbl}>72h Rain Accumulation</Text>
+                <Text style={styles.metricLbl}>{t('rain72h')}</Text>
               </View>
               <View style={styles.metricBox}>
                 <Text style={styles.metricVal}>{telemetry.weather.soilMoistureIndex}%</Text>
-                <Text style={styles.metricLbl}>Soil Saturation</Text>
+                <Text style={styles.metricLbl}>{t('soilSaturation')}</Text>
               </View>
             </View>
           </View>
@@ -610,7 +639,7 @@ export default function App() {
 
       {/* Dynamic GeoJSON Vector Map */}
       <View style={styles.sectionHeaderRow}>
-        <Text style={styles.sectionHeader}>Dynamic Inundation & Escape Vector Map</Text>
+        <Text style={styles.sectionHeader}>{t('mapSectionTitle')}</Text>
         <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: 'bold' }}>
           Contours: {telemetry ? `${telemetry.hydrology.riverDischargeM3s} m³/s` : '90 m³/s'}
         </Text>
@@ -634,7 +663,7 @@ export default function App() {
       </View>
 
       {/* 7-Day Hydrological Forecast */}
-      <Text style={styles.sectionHeader}>7-Day River Discharge Forecast (m³/s)</Text>
+      <Text style={styles.sectionHeader}>{t('forecastTitle')}</Text>
       <View style={styles.chartCard}>
         <View style={styles.barChartRow}>
           {forecastBars.map((val, idx) => {
@@ -651,26 +680,26 @@ export default function App() {
       </View>
 
       {/* Stress-Test Simulations */}
-      <Text style={styles.sectionHeader}>Scenario Stress-Test Engine</Text>
+      <Text style={styles.sectionHeader}>{t('simSectionTitle')}</Text>
       <View style={styles.simButtonsRow}>
         <TouchableOpacity style={styles.simBtn} onPress={() => runSimulation('cloudburst')}>
-          <Text style={styles.simBtnText}>⚡ Cloudburst (+65mm)</Text>
+          <Text style={styles.simBtnText}>{t('simCloudburst')}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.simBtn} onPress={() => runSimulation('dam_release')}>
-          <Text style={styles.simBtnText}>🌊 Dam Release (500m³/s)</Text>
+          <Text style={styles.simBtnText}>{t('simDamRelease')}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[styles.simBtn, { backgroundColor: '#7f1d1d' }]} onPress={() => runSimulation('catastrophic')}>
-          <Text style={styles.simBtnText}>🚨 Catastrophic Flood</Text>
+          <Text style={styles.simBtnText}>{t('simCatastrophic')}</Text>
         </TouchableOpacity>
       </View>
 
       {/* Safe Shelters */}
-      <Text style={styles.sectionHeader}>Designated Safe Evacuation Shelters</Text>
+      <Text style={styles.sectionHeader}>{t('sheltersTitle')}</Text>
       {shelters.map((s) => (
         <View key={s.id} style={styles.shelterCard}>
           <View style={{ flex: 1 }}>
             <Text style={styles.shelterName}>{s.name}</Text>
-            <Text style={styles.shelterInfo}>{s.distanceKm} km away • {s.capacitySlots} slots open</Text>
+            <Text style={styles.shelterInfo}>{s.distanceKm} km {t('away')} • {s.capacitySlots} {t('slotsOpen')}</Text>
           </View>
           <TouchableOpacity
             style={styles.evacuateBtn}
@@ -683,7 +712,7 @@ export default function App() {
               }
             }}
           >
-            <Text style={styles.btnText}>Evacuate ➔</Text>
+            <Text style={styles.btnText}>{t('evacuateBtn')}</Text>
           </TouchableOpacity>
         </View>
       ))}
@@ -691,11 +720,11 @@ export default function App() {
       {/* Crowdsourced Hazards */}
       <View style={styles.sectionHeaderRow}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <Text style={styles.sectionHeader}>Crowdsourced Inundation Feed</Text>
+          <Text style={styles.sectionHeader}>{t('hazardsTitle')}</Text>
           <View style={styles.liveIndicatorDot} />
         </View>
         <TouchableOpacity style={styles.addBtn} onPress={() => setModalVisible(true)}>
-          <Text style={styles.btnText}>+ Report Hazard</Text>
+          <Text style={styles.btnText}>{t('reportHazardBtn')}</Text>
         </TouchableOpacity>
       </View>
 
@@ -707,25 +736,62 @@ export default function App() {
         </View>
       ))}
 
-      {/* Submission Modal */}
+      {/* First-Time & Manual Language Permission Modal */}
+      <Modal visible={langModalVisible} transparent animationType="fade">
+        <View style={styles.modalBackdrop}>
+          <View style={styles.langModalContent}>
+            <Text style={styles.langModalTitle}>🌐 {t('selectLanguagePrompt')}</Text>
+            <Text style={styles.langModalSubtitle}>{t('selectLanguageSubtitle')}</Text>
+            
+            <View style={styles.langList}>
+              {SUPPORTED_LANGUAGES.map((lang) => {
+                const isSelected = currentLang === lang.code;
+                return (
+                  <TouchableOpacity
+                    key={lang.code}
+                    style={[styles.langOptionCard, isSelected && styles.langOptionCardActive]}
+                    onPress={() => handleSelectLanguage(lang.code)}
+                  >
+                    <Text style={[styles.langOptionNative, isSelected && styles.langOptionTextActive]}>
+                      {lang.nativeLabel}
+                    </Text>
+                    <Text style={[styles.langOptionLabel, isSelected && styles.langOptionTextActive]}>
+                      {lang.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <TouchableOpacity
+              style={styles.langContinueBtn}
+              onPress={() => handleSelectLanguage(currentLang)}
+            >
+              <Text style={styles.langContinueBtnText}>{t('continueBtn')}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Hazard Submission Modal */}
       <Modal visible={modalVisible} transparent animationType="slide">
         <View style={styles.modalBackdrop}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>File Live Hazard Report</Text>
+            <Text style={styles.modalTitle}>{t('modalTitle')}</Text>
             <View style={styles.typeSelectorRow}>
-              {['WATERLOGGED', 'ROAD BLOCKED', 'RIVER OVERFLOW', 'EVACUATION NEEDED'].map((t) => (
+              {['WATERLOGGED', 'ROAD BLOCKED', 'RIVER OVERFLOW', 'EVACUATION NEEDED'].map((tType) => (
                 <TouchableOpacity
-                  key={t}
-                  style={[styles.typeOption, hazardType === t && styles.typeOptionActive]}
-                  onPress={() => setHazardType(t)}
+                  key={tType}
+                  style={[styles.typeOption, hazardType === tType && styles.typeOptionActive]}
+                  onPress={() => setHazardType(tType)}
                 >
-                  <Text style={[styles.typeOptionText, hazardType === t && styles.typeOptionTextActive]}>{t}</Text>
+                  <Text style={[styles.typeOptionText, hazardType === tType && styles.typeOptionTextActive]}>{tType}</Text>
                 </TouchableOpacity>
               ))}
             </View>
             <TextInput
               style={styles.modalInput}
-              placeholder="Describe situation (e.g. Submerged culvert, 2ft flow)..."
+              placeholder={t('descPlaceholder')}
               placeholderTextColor="#94a3b8"
               value={hazardDesc}
               onChangeText={setHazardDesc}
@@ -734,10 +800,10 @@ export default function App() {
             />
             <View style={styles.modalBtnRow}>
               <TouchableOpacity style={styles.cancelBtn} onPress={() => setModalVisible(false)}>
-                <Text style={styles.btnText}>Cancel</Text>
+                <Text style={styles.btnText}>{t('cancel')}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.submitBtn} onPress={submitHazard}>
-                <Text style={styles.btnText}>Submit Report</Text>
+                <Text style={styles.btnText}>{t('submitReport')}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -753,17 +819,25 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   title: { fontSize: 24, fontWeight: '900', color: '#f8fafc' },
   subtitle: { fontSize: 12, color: '#94a3b8', marginTop: 2 },
-  headerActions: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+  headerActions: { flexDirection: 'row', gap: 6, alignItems: 'center' },
+  langBtn: {
+    backgroundColor: '#1e293b',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#38bdf8',
+  },
   pdfBtn: {
     backgroundColor: '#334155',
     paddingVertical: 8,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#475569',
   },
-  sosBtn: { backgroundColor: '#ef4444', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8 },
-  btnText: { color: '#ffffff', fontWeight: 'bold', fontSize: 13 },
+  sosBtn: { backgroundColor: '#ef4444', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8 },
+  btnText: { color: '#ffffff', fontWeight: 'bold', fontSize: 12 },
   offlineBanner: {
     backgroundColor: '#b91c1c',
     paddingVertical: 8,
@@ -822,7 +896,7 @@ const styles = StyleSheet.create({
   feedType: { color: '#f59e0b', fontWeight: 'bold', fontSize: 12 },
   feedDesc: { color: '#f8fafc', fontSize: 13, marginVertical: 4 },
   feedTime: { color: '#64748b', fontSize: 11 },
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', padding: 20 },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', padding: 20 },
   modalContent: { backgroundColor: '#1e293b', padding: 20, borderRadius: 12, borderWidth: 1, borderColor: '#475569' },
   modalTitle: { color: '#f8fafc', fontSize: 18, fontWeight: 'bold', marginBottom: 14 },
   typeSelectorRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 },
@@ -834,4 +908,17 @@ const styles = StyleSheet.create({
   modalBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
   cancelBtn: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 6, backgroundColor: '#475569' },
   submitBtn: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 6, backgroundColor: '#0284c7' },
+
+  /* Language Modal Styles */
+  langModalContent: { backgroundColor: '#1e293b', padding: 24, borderRadius: 16, borderWidth: 1, borderColor: '#38bdf8', maxWidth: 480, width: '100%', alignSelf: 'center' },
+  langModalTitle: { color: '#f8fafc', fontSize: 20, fontWeight: '900', marginBottom: 6, textAlign: 'center' },
+  langModalSubtitle: { color: '#94a3b8', fontSize: 13, textAlign: 'center', marginBottom: 20, lineHeight: 18 },
+  langList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 20 },
+  langOptionCard: { flex: 1, minWidth: '45%', backgroundColor: '#0f172a', borderWidth: 1, borderColor: '#334155', borderRadius: 10, padding: 12, alignItems: 'center' },
+  langOptionCardActive: { backgroundColor: '#0369a1', borderColor: '#38bdf8', borderWidth: 2 },
+  langOptionNative: { color: '#f8fafc', fontSize: 16, fontWeight: 'bold', marginBottom: 2 },
+  langOptionLabel: { color: '#94a3b8', fontSize: 12 },
+  langOptionTextActive: { color: '#ffffff' },
+  langContinueBtn: { backgroundColor: '#0284c7', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
+  langContinueBtnText: { color: '#ffffff', fontWeight: 'bold', fontSize: 14 },
 });

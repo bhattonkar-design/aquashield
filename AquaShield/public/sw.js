@@ -1,4 +1,4 @@
-const CACHE_NAME = 'aquashield-v3';
+const CACHE_NAME = 'aquashield-v4';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
