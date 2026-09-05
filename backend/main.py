@@ -27,7 +27,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://aqkivwbsrmymogiilpyw.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8892785626:AAGBr72vvOVFPQHP-_Rx98ZWm2XUMqUgWtk")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "1889659746")
 
 supabase_client: Optional[Client] = None
