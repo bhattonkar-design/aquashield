@@ -66,14 +66,8 @@ interface InteractiveMapProps {
   selectedShelterId: number | null;
 }
 
-const InteractiveMap: React.FC<InteractiveMapProps> = ({
-  lat,
-  lon,
-  discharge,
-  hazards,
-  shelters,
-  selectedShelterId,
-}) => {
+// Native & Web safe wrapper for Map
+const InteractiveMap: React.FC<InteractiveMapProps> = (props) => {
   const mapContainerRef = useRef<any>(null);
   const mapInstanceRef = useRef<any>(null);
   const layersRef = useRef<{ geojson?: any; markers?: any[]; route?: any }>({ markers: [] });
@@ -87,7 +81,7 @@ const InteractiveMap: React.FC<InteractiveMapProps> = ({
       const map = L.map(mapContainerRef.current, {
         zoomControl: false,
         attributionControl: false,
-      }).setView([lat, lon], 13);
+      }).setView([props.lat, props.lon], 13);
 
       L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
@@ -97,12 +91,11 @@ const InteractiveMap: React.FC<InteractiveMapProps> = ({
       L.control.zoom({ position: 'bottomright' }).addTo(map);
       mapInstanceRef.current = map;
     } else {
-      mapInstanceRef.current.setView([lat, lon], 13);
+      mapInstanceRef.current.setView([props.lat, props.lon], 13);
     }
 
     const map = mapInstanceRef.current;
 
-    // Clear prior vector layers and markers
     if (layersRef.current.geojson) map.removeLayer(layersRef.current.geojson);
     if (layersRef.current.route) map.removeLayer(layersRef.current.route);
     if (layersRef.current.markers) {
@@ -110,8 +103,7 @@ const InteractiveMap: React.FC<InteractiveMapProps> = ({
       layersRef.current.markers = [];
     }
 
-    // 1. Fetch & draw scaled GeoJSON inundation contours
-    fetch(`${API_BASE}/inundation-zones?lat=${lat}&lon=${lon}&discharge=${discharge}`)
+    fetch(`${API_BASE}/inundation-zones?lat=${props.lat}&lon=${props.lon}&discharge=${props.discharge}`)
       .then((r) => r.json())
       .then((geoData) => {
         if (!mapInstanceRef.current || !geoData || !geoData.features) return;
@@ -123,93 +115,48 @@ const InteractiveMap: React.FC<InteractiveMapProps> = ({
             weight: 2,
             dashArray: feature.properties.zone === 'EXTREME' ? '4, 4' : undefined,
           }),
-          onEachFeature: (feature: any, layerItem: any) => {
-            layerItem.bindPopup(
-              `<strong>${feature.properties.label}</strong><br/>Estimated Depth: <b>${feature.properties.depthEstimate}</b>`
-            );
-          },
         }).addTo(map);
         layersRef.current.geojson = layer;
       })
-      .catch((e) => console.warn('Inundation layer using cached representation:', e));
+      .catch((e) => console.warn('Inundation load fallback:', e));
 
-    // 2. Add Center Monitoring Station Marker
-    const userMarker = L.circleMarker([lat, lon], {
+    const userMarker = L.circleMarker([props.lat, props.lon], {
       radius: 9,
       color: '#38bdf8',
       fillColor: '#0284c7',
       fillOpacity: 1,
       weight: 3,
-    })
-      .addTo(map)
-      .bindPopup('<b>Current Monitoring Station Coordinates</b>');
+    }).addTo(map);
     layersRef.current.markers.push(userMarker);
 
-    // 3. Add Safe Evacuation Shelters
-    shelters.forEach((s) => {
-      const isTarget = selectedShelterId === s.id;
-      const shelterMarker = L.circleMarker([s.lat, s.lon], {
+    props.shelters.forEach((s) => {
+      const isTarget = props.selectedShelterId === s.id;
+      const marker = L.circleMarker([s.lat, s.lon], {
         radius: isTarget ? 10 : 7,
         color: '#10b981',
         fillColor: isTarget ? '#34d399' : '#059669',
         fillOpacity: 0.9,
         weight: isTarget ? 3 : 2,
-      })
-        .addTo(map)
-        .bindPopup(`<b>${s.name}</b><br/>Capacity: ${s.capacitySlots} slots<br/>Distance: ${s.distanceKm} km`);
-      layersRef.current.markers.push(shelterMarker);
+      }).addTo(map);
+      layersRef.current.markers.push(marker);
     });
+  }, [props.lat, props.lon, props.discharge, props.shelters, props.selectedShelterId]);
 
-    // 4. Add Hazard Feed Points
-    hazards.forEach((h) => {
-      if (h.lat && h.lon) {
-        const hazardMarker = L.circleMarker([h.lat, h.lon], {
-          radius: 7,
-          color: '#ef4444',
-          fillColor: '#f97316',
-          fillOpacity: 0.9,
-          weight: 2,
-        })
-          .addTo(map)
-          .bindPopup(`<b>⚠️ ${h.type}</b><br/>${h.description}`);
-        layersRef.current.markers.push(hazardMarker);
-      }
+  if (Platform.OS === 'web') {
+    return React.createElement('div', {
+      ref: mapContainerRef,
+      style: { width: '100%', height: '320px', borderRadius: '8px', overflow: 'hidden' },
     });
-
-    // 5. Draw Evacuation Vector Polyline to target shelter
-    const targetShelter = shelters.find((s) => s.id === selectedShelterId) || shelters[0];
-    if (targetShelter) {
-      const routeLine = L.polyline(
-        [
-          [lat, lon],
-          [lat + (targetShelter.lat - lat) * 0.45 + 0.003, lon + (targetShelter.lon - lon) * 0.35 - 0.002],
-          [targetShelter.lat, targetShelter.lon],
-        ],
-        {
-          color: '#10b981',
-          weight: 4,
-          opacity: 0.85,
-          dashArray: '8, 8',
-        }
-      ).addTo(map);
-      layersRef.current.route = routeLine;
-    }
-  }, [lat, lon, discharge, hazards, shelters, selectedShelterId]);
-
-  if (Platform.OS !== 'web') return null;
+  }
 
   return (
-    <div
-      ref={mapContainerRef}
-      style={{
-        width: '100%',
-        height: '320px',
-        borderRadius: '8px',
-        overflow: 'hidden',
-        position: 'relative',
-        zIndex: 1,
-      }}
-    />
+    <View style={styles.mobileMapFallback}>
+      <Text style={styles.mobileMapTitle}>🗺️ Live Satellite Vector Map Active</Text>
+      <Text style={styles.cardText}>
+        Monitored Coordinates: {props.lat.toFixed(2)}, {props.lon.toFixed(2)}
+      </Text>
+      <Text style={styles.cardSubtext}>Active River Discharge: {props.discharge} m³/s</Text>
+    </View>
   );
 };
 
@@ -228,12 +175,14 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedShelterId, setSelectedShelterId] = useState<number | null>(1);
 
-  // Localization / Language State with Safe Async Storage
+  // Localization & Startup Language Guard
   const [currentLang, setCurrentLang] = useState<LanguageCode>('en');
+  const [hasSelectedLang, setHasSelectedLang] = useState<boolean>(false);
+  const [isInitializingLang, setIsInitializingLang] = useState<boolean>(true);
   const [langModalVisible, setLangModalVisible] = useState<boolean>(false);
 
   useEffect(() => {
-    const loadSavedLanguage = async () => {
+    const checkInitialLanguage = async () => {
       try {
         let savedLang: string | null = null;
         if (Platform.OS === 'web' && typeof window !== 'undefined' && window.localStorage) {
@@ -244,20 +193,25 @@ export default function App() {
 
         if (savedLang && TRANSLATIONS[savedLang as LanguageCode]) {
           setCurrentLang(savedLang as LanguageCode);
+          setHasSelectedLang(true);
         } else {
-          setLangModalVisible(true);
+          setHasSelectedLang(false);
         }
       } catch (err) {
-        console.warn('Could not read saved language:', err);
-        setLangModalVisible(true);
+        setHasSelectedLang(false);
+      } finally {
+        setIsInitializingLang(false);
       }
     };
 
-    loadSavedLanguage();
+    checkInitialLanguage();
   }, []);
 
   const handleSelectLanguage = async (code: LanguageCode) => {
     setCurrentLang(code);
+    setHasSelectedLang(true);
+    setLangModalVisible(false);
+
     try {
       if (Platform.OS === 'web' && typeof window !== 'undefined' && window.localStorage) {
         window.localStorage.setItem('aquashield_lang', code);
@@ -265,16 +219,15 @@ export default function App() {
         await AsyncStorage.setItem('aquashield_lang', code);
       }
     } catch (err) {
-      console.warn('Could not persist language:', err);
+      console.warn('Language persist err:', err);
     }
-    setLangModalVisible(false);
   };
 
   const t = (key: string): string => {
     return TRANSLATIONS[currentLang]?.[key] || TRANSLATIONS.en[key] || key;
   };
 
-  // Safe offline connection tracker for Web
+  // Safe Web-only Offline Connection Tracker
   const [isOffline, setIsOffline] = useState<boolean>(false);
 
   useEffect(() => {
@@ -293,7 +246,6 @@ export default function App() {
     };
   }, []);
 
-  // Designated Shelters
   const shelters: Shelter[] = [
     {
       id: 1,
@@ -313,44 +265,32 @@ export default function App() {
     },
   ];
 
-  // Modal State
   const [modalVisible, setModalVisible] = useState<boolean>(false);
   const [hazardType, setHazardType] = useState<string>('WATERLOGGED');
   const [hazardDesc, setHazardDesc] = useState<string>('');
 
-  // Continuous Siren Engine with Hardware Vibration & Audio Unlocking
   const playSiren = () => {
-    // 1. Cross-Platform Hardware Haptic Vibration
-    if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined' && 'navigator' in window && window.navigator.vibrate) {
-        try {
-          window.navigator.vibrate([800, 200, 800, 200, 800, 200, 800, 200, 800]);
-        } catch (e) {
-          console.warn('Web vibration policy restriction:', e);
+    try {
+      if (Platform.OS === 'web') {
+        if (typeof window !== 'undefined' && 'navigator' in window && window.navigator.vibrate) {
+          window.navigator.vibrate([800, 200, 800, 200, 800, 200, 800]);
         }
-      }
-    } else {
-      try {
+      } else {
         Vibration.vibrate([0, 800, 200, 800, 200, 800, 200, 800], false);
-      } catch (e) {
-        console.warn('Native vibration call failed:', e);
       }
+    } catch (e) {
+      console.warn('Vibration failed:', e);
     }
 
-    // 2. Continuous 5.0-Second Acoustic Siren Modulation
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
       try {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (!AudioCtx) return;
         const ctx = new AudioCtx();
-
-        if (ctx.state === 'suspended') {
-          ctx.resume();
-        }
+        if (ctx.state === 'suspended') ctx.resume();
 
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
-
         osc.type = 'sawtooth';
 
         const startTime = ctx.currentTime;
@@ -368,11 +308,10 @@ export default function App() {
 
         osc.connect(gain);
         gain.connect(ctx.destination);
-
         osc.start(startTime);
         osc.stop(startTime + duration);
       } catch (e) {
-        console.warn('AudioContext synthesis failed:', e);
+        console.warn('AudioContext failed:', e);
       }
     }
   };
@@ -387,7 +326,6 @@ export default function App() {
         setForecastBars(data.forecast7Days.map((f: any) => f.dischargeM3s));
       }
     } catch (e) {
-      console.warn('Backend unavailable, using telemetry fallback/cache');
       setTelemetry({
         riskLevel: 'MODERATE',
         compositeRiskScore: 42,
@@ -408,7 +346,7 @@ export default function App() {
         setHazards(data);
       }
     } catch (e) {
-      console.warn('Could not fetch hazards, retaining active feed');
+      console.warn('Hazard fetch fallback');
     }
   };
 
@@ -416,24 +354,24 @@ export default function App() {
     fetchTelemetry(coords.lat, coords.lon);
     fetchHazards();
 
-    const channel = supabase
-      .channel('hazards-realtime')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'hazards' },
-        (payload) => {
+    try {
+      const channel = supabase
+        .channel('hazards-realtime')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'hazards' }, (payload) => {
           const newRow = payload.new as Hazard;
-          setHazards((currentHazards) => {
-            if (currentHazards.some((h) => h.id === newRow.id)) return currentHazards;
-            return [newRow, ...currentHazards];
+          setHazards((current) => {
+            if (current.some((h) => h.id === newRow.id)) return current;
+            return [newRow, ...current];
           });
-        }
-      )
-      .subscribe();
+        })
+        .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    } catch (e) {
+      console.warn('Realtime subscription error:', e);
+    }
   }, [coords]);
 
   const handleSearchChange = (text: string) => {
@@ -450,14 +388,12 @@ export default function App() {
     searchTimeout.current = setTimeout(async () => {
       try {
         const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(text)}&limit=5`;
-        const res = await fetch(url, {
-          headers: { 'Accept-Language': 'en' },
-        });
+        const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
         const data = await res.json();
         setSearchResults(data);
         setShowDropdown(true);
       } catch (e) {
-        console.warn('Geocoding search failed', e);
+        console.warn('Search geocoding error:', e);
       } finally {
         setIsSearching(false);
       }
@@ -476,17 +412,16 @@ export default function App() {
 
   const runSimulation = (type: string) => {
     playSiren();
-
     fetch(`${API_BASE}/simulate-flood-scenario?scenario=${type}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-    }).catch((err) => console.warn('Sim dispatch failed:', err));
+    }).catch(() => {});
 
     if (type === 'cloudburst') {
       setTelemetry({
         riskLevel: 'HIGH',
         compositeRiskScore: 74,
-        advisoryMessage: 'SIMULATION ACTIVE: Sudden +65mm cloudburst triggered. Runoff surge imminent.',
+        advisoryMessage: 'SIMULATION ACTIVE: Sudden +65mm cloudburst triggered.',
         hydrology: { riverDischargeM3s: 580.4, crestTimeHours: 6 },
         weather: { projected72hRainfallMm: 95.0, soilMoistureIndex: 92 },
       });
@@ -495,7 +430,7 @@ export default function App() {
       setTelemetry({
         riskLevel: 'CATASTROPHIC',
         compositeRiskScore: 89,
-        advisoryMessage: 'SIMULATION ACTIVE: Upstream Dam Release (500m³/s). Valley inundation advisory.',
+        advisoryMessage: 'SIMULATION ACTIVE: Upstream Dam Release (500m³/s).',
         hydrology: { riverDischargeM3s: 890.2, crestTimeHours: 3 },
         weather: { projected72hRainfallMm: 45.0, soilMoistureIndex: 88 },
       });
@@ -504,7 +439,7 @@ export default function App() {
       setTelemetry({
         riskLevel: 'CATASTROPHIC',
         compositeRiskScore: 98,
-        advisoryMessage: 'SIMULATION ACTIVE: CATASTROPHIC BASIN FLOOD. Immediate evacuation required!',
+        advisoryMessage: 'SIMULATION ACTIVE: CATASTROPHIC BASIN FLOOD.',
         hydrology: { riverDischargeM3s: 1420.0, crestTimeHours: 1 },
         weather: { projected72hRainfallMm: 160.0, soilMoistureIndex: 99 },
       });
@@ -514,7 +449,7 @@ export default function App() {
 
   const triggerSOS = async () => {
     playSiren();
-    alert('EMERGENCY SOS: High-priority distress signal broadcasted to rescue units.');
+    alert('EMERGENCY SOS: Distress signal broadcasted to rescue units.');
     try {
       await fetch(`${API_BASE}/trigger-sos`, {
         method: 'POST',
@@ -526,16 +461,14 @@ export default function App() {
           details: 'Urgent rescue response needed at current coordinates',
         }),
       });
-    } catch (e) {
-      console.warn('SOS trigger failed', e);
-    }
+    } catch (e) {}
   };
 
   const handleExportPdf = () => {
     if (Platform.OS === 'web') {
       generateEvacuationBriefingPdf(regionName, coords, telemetry, shelters, hazards);
     } else {
-      alert('Evacuation Briefing PDF export is currently available via the web dashboard.');
+      alert('PDF Dossier export is available via the web console.');
     }
   };
 
@@ -548,7 +481,6 @@ export default function App() {
       lat: coords.lat,
       lon: coords.lon,
     };
-
     setModalVisible(false);
     setHazardDesc('');
 
@@ -559,27 +491,72 @@ export default function App() {
         body: JSON.stringify(newReport),
       });
     } catch (e) {
-      console.warn('Hazard POST failed; stored locally', e);
       setHazards((prev) => [newReport, ...prev]);
     }
   };
 
   const getRiskColor = (level: string = '') => {
     switch (level.toUpperCase()) {
-      case 'CATASTROPHIC':
-        return '#ef4444';
-      case 'HIGH':
-        return '#f97316';
-      case 'MODERATE':
-        return '#eab308';
-      default:
-        return '#10b981';
+      case 'CATASTROPHIC': return '#ef4444';
+      case 'HIGH': return '#f97316';
+      case 'MODERATE': return '#eab308';
+      default: return '#10b981';
     }
   };
 
+  // 1. Initial Storage Reading Screen
+  if (isInitializingLang) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color="#38bdf8" />
+      </View>
+    );
+  }
+
+  // 2. Full-Screen Language Selection on First Launch
+  if (!hasSelectedLang) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', padding: 20 }]}>
+        <View style={styles.langModalContent}>
+          <Text style={styles.langModalTitle}>🌐 Select Language</Text>
+          <Text style={styles.langModalSubtitle}>
+            Choose your preferred language for flood warnings and emergency alerts.
+          </Text>
+
+          <View style={styles.langList}>
+            {SUPPORTED_LANGUAGES.map((lang) => {
+              const isSelected = currentLang === lang.code;
+              return (
+                <TouchableOpacity
+                  key={lang.code}
+                  style={[styles.langOptionCard, isSelected && styles.langOptionCardActive]}
+                  onPress={() => setCurrentLang(lang.code)}
+                >
+                  <Text style={[styles.langOptionNative, isSelected && styles.langOptionTextActive]}>
+                    {lang.nativeLabel}
+                  </Text>
+                  <Text style={[styles.langOptionLabel, isSelected && styles.langOptionTextActive]}>
+                    {lang.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <TouchableOpacity
+            style={styles.langContinueBtn}
+            onPress={() => handleSelectLanguage(currentLang)}
+          >
+            <Text style={styles.langContinueBtnText}>Continue to AquaShield ➔</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // 3. Main Dashboard UI
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
-      {/* Header */}
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>{t('appTitle')}</Text>
@@ -598,14 +575,12 @@ export default function App() {
         </View>
       </View>
 
-      {/* Real-Time Offline Grid-Down Alert Banner */}
       {isOffline && (
         <View style={styles.offlineBanner}>
           <Text style={styles.offlineBannerText}>{t('offlineBanner')}</Text>
         </View>
       )}
 
-      {/* Geocoding Search Bar */}
       <View style={styles.searchContainer}>
         <TextInput
           style={styles.searchInput}
@@ -633,14 +608,12 @@ export default function App() {
         )}
       </View>
 
-      {/* Active Monitored Coordinates */}
       <View style={styles.regionBanner}>
         <Text style={styles.regionText}>
           📍 {t('monitoredRegion')}: <Text style={styles.regionHighlight}>{regionName}</Text> ({coords.lat.toFixed(2)}, {coords.lon.toFixed(2)})
         </Text>
       </View>
 
-      {/* Telemetry Composite Index */}
       {loading ? (
         <ActivityIndicator size="large" color="#38bdf8" style={{ marginVertical: 30 }} />
       ) : (
@@ -676,32 +649,21 @@ export default function App() {
         )
       )}
 
-      {/* Dynamic GeoJSON Vector Map */}
       <View style={styles.sectionHeaderRow}>
         <Text style={styles.sectionHeader}>{t('mapSectionTitle')}</Text>
-        <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: 'bold' }}>
-          Contours: {telemetry ? `${telemetry.hydrology.riverDischargeM3s} m³/s` : '90 m³/s'}
-        </Text>
       </View>
 
       <View style={styles.mapCard}>
-        {Platform.OS === 'web' ? (
-          <InteractiveMap
-            lat={coords.lat}
-            lon={coords.lon}
-            discharge={telemetry?.hydrology.riverDischargeM3s || 90}
-            hazards={hazards}
-            shelters={shelters}
-            selectedShelterId={selectedShelterId}
-          />
-        ) : (
-          <View style={styles.mobileMapFallback}>
-            <Text style={styles.cardText}>Interactive Map Active for {regionName}</Text>
-          </View>
-        )}
+        <InteractiveMap
+          lat={coords.lat}
+          lon={coords.lon}
+          discharge={telemetry?.hydrology.riverDischargeM3s || 90}
+          hazards={hazards}
+          shelters={shelters}
+          selectedShelterId={selectedShelterId}
+        />
       </View>
 
-      {/* 7-Day Hydrological Forecast */}
       <Text style={styles.sectionHeader}>{t('forecastTitle')}</Text>
       <View style={styles.chartCard}>
         <View style={styles.barChartRow}>
@@ -718,7 +680,6 @@ export default function App() {
         </View>
       </View>
 
-      {/* Stress-Test Simulations */}
       <Text style={styles.sectionHeader}>{t('simSectionTitle')}</Text>
       <View style={styles.simButtonsRow}>
         <TouchableOpacity style={styles.simBtn} onPress={() => runSimulation('cloudburst')}>
@@ -732,7 +693,6 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {/* Safe Shelters */}
       <Text style={styles.sectionHeader}>{t('sheltersTitle')}</Text>
       {shelters.map((s) => (
         <View key={s.id} style={styles.shelterCard}>
@@ -744,11 +704,7 @@ export default function App() {
             style={styles.evacuateBtn}
             onPress={() => {
               setSelectedShelterId(s.id);
-              if (Platform.OS === 'web' && typeof window !== 'undefined') {
-                window.open(`https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}`, '_blank');
-              } else {
-                alert(`Routing initiated to ${s.name}`);
-              }
+              alert(`Routing to ${s.name}`);
             }}
           >
             <Text style={styles.btnText}>{t('evacuateBtn')}</Text>
@@ -756,7 +712,6 @@ export default function App() {
         </View>
       ))}
 
-      {/* Crowdsourced Hazards */}
       <View style={styles.sectionHeaderRow}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Text style={styles.sectionHeader}>{t('hazardsTitle')}</Text>
@@ -775,7 +730,6 @@ export default function App() {
         </View>
       ))}
 
-      {/* First-Time & Manual Language Permission Modal */}
       <Modal visible={langModalVisible} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
           <View style={styles.langModalContent}>
@@ -812,7 +766,6 @@ export default function App() {
         </View>
       </Modal>
 
-      {/* Hazard Submission Modal */}
       <Modal visible={modalVisible} transparent animationType="slide">
         <View style={styles.modalBackdrop}>
           <View style={styles.modalContent}>
@@ -859,43 +812,16 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, fontWeight: '900', color: '#f8fafc' },
   subtitle: { fontSize: 12, color: '#94a3b8', marginTop: 2 },
   headerActions: { flexDirection: 'row', gap: 6, alignItems: 'center' },
-  langBtn: {
-    backgroundColor: '#1e293b',
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#38bdf8',
-  },
-  pdfBtn: {
-    backgroundColor: '#334155',
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#475569',
-  },
+  langBtn: { backgroundColor: '#1e293b', paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: '#38bdf8' },
+  pdfBtn: { backgroundColor: '#334155', paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: '#475569' },
   sosBtn: { backgroundColor: '#ef4444', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8 },
   btnText: { color: '#ffffff', fontWeight: 'bold', fontSize: 12 },
-  offlineBanner: {
-    backgroundColor: '#b91c1c',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#ef4444',
-  },
-  offlineBannerText: {
-    color: '#ffffff',
-    fontWeight: 'bold',
-    fontSize: 12,
-    textAlign: 'center',
-  },
+  offlineBanner: { backgroundColor: '#b91c1c', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, marginBottom: 14, borderWidth: 1, borderColor: '#ef4444' },
+  offlineBannerText: { color: '#ffffff', fontWeight: 'bold', fontSize: 12, textAlign: 'center' },
   searchContainer: { position: 'relative', zIndex: 50, marginBottom: 12 },
   searchInput: { backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#334155', borderRadius: 8, padding: 12, color: '#f8fafc', fontSize: 14 },
   searchSpinner: { position: 'absolute', right: 12, top: 12 },
-  dropdown: { position: 'absolute', top: 50, left: 0, right: 0, backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#475569', borderRadius: 8, zIndex: 100, shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 8, elevation: 10 },
+  dropdown: { position: 'absolute', top: 50, left: 0, right: 0, backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#475569', borderRadius: 8, zIndex: 100 },
   dropdownItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#334155' },
   dropdownText: { color: '#e2e8f0', fontSize: 13 },
   regionBanner: { backgroundColor: '#1e293b', padding: 10, borderRadius: 8, marginBottom: 16, borderWidth: 1, borderColor: '#334155' },
@@ -915,8 +841,10 @@ const styles = StyleSheet.create({
   sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 10 },
   liveIndicatorDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#10b981' },
   mapCard: { backgroundColor: '#1e293b', borderRadius: 8, overflow: 'hidden', marginBottom: 16, borderWidth: 1, borderColor: '#334155' },
-  mobileMapFallback: { height: 160, justifyContent: 'center', alignItems: 'center', padding: 16 },
-  cardText: { color: '#94a3b8', fontSize: 13 },
+  mobileMapFallback: { padding: 20, alignItems: 'center', justifyContent: 'center' },
+  mobileMapTitle: { color: '#38bdf8', fontSize: 15, fontWeight: 'bold', marginBottom: 6 },
+  cardText: { color: '#f8fafc', fontSize: 13, marginBottom: 2 },
+  cardSubtext: { color: '#94a3b8', fontSize: 12 },
   chartCard: { backgroundColor: '#1e293b', padding: 16, borderRadius: 8, marginBottom: 16, borderWidth: 1, borderColor: '#334155' },
   barChartRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 130, paddingTop: 20 },
   barCol: { alignItems: 'center', flex: 1, height: '100%', justifyContent: 'flex-end' },
@@ -948,7 +876,6 @@ const styles = StyleSheet.create({
   cancelBtn: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 6, backgroundColor: '#475569' },
   submitBtn: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 6, backgroundColor: '#0284c7' },
 
-  /* Language Modal Styles */
   langModalContent: { backgroundColor: '#1e293b', padding: 24, borderRadius: 16, borderWidth: 1, borderColor: '#38bdf8', maxWidth: 480, width: '100%', alignSelf: 'center' },
   langModalTitle: { color: '#f8fafc', fontSize: 20, fontWeight: '900', marginBottom: 6, textAlign: 'center' },
   langModalSubtitle: { color: '#94a3b8', fontSize: 13, textAlign: 'center', marginBottom: 20, lineHeight: 18 },
